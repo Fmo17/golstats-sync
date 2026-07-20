@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Golstats — Painel de Dados</title>
+<style>
+  :root {
+    --verde-campo: #0b3d2e;
+    --verde-escuro: #062419;
+    --dourado: #c9a227;
+    --creme: #f2ede1;
+    --cinza-texto: #8a9a91;
+    --vermelho-erro: #c1444a;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--verde-escuro);
+    color: var(--creme);
+    font-family: 'Georgia', 'Times New Roman', serif;
+    min-height: 100vh;
+    background-image:
+      radial-gradient(circle at 20% 20%, rgba(201, 162, 39, 0.05), transparent 40%),
+      radial-gradient(circle at 80% 80%, rgba(201, 162, 39, 0.05), transparent 40%);
+  }
+
+  header {
+    padding: 48px 32px 32px;
+    border-bottom: 1px solid rgba(201, 162, 39, 0.25);
+  }
+
+  .marca {
+    font-size: 14px;
+    letter-spacing: 0.3em;
+    text-transform: uppercase;
+    color: var(--dourado);
+    margin-bottom: 8px;
+    font-family: 'Helvetica Neue', Arial, sans-serif;
+  }
+
+  h1 {
+    font-size: clamp(32px, 5vw, 52px);
+    font-weight: 400;
+    letter-spacing: -0.01em;
+  }
+
+  .subtitulo {
+    color: var(--cinza-texto);
+    margin-top: 12px;
+    font-size: 16px;
+    font-family: 'Helvetica Neue', Arial, sans-serif;
+    max-width: 560px;
+  }
+
+  main {
+    padding: 32px;
+    max-width: 1100px;
+    margin: 0 auto;
+  }
+
+  .resumo {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    gap: 1px;
+    background: rgba(201, 162, 39, 0.25);
+    border: 1px solid rgba(201, 162, 39, 0.25);
+    margin-bottom: 48px;
+  }
+
+  .card-resumo {
+    background: var(--verde-escuro);
+    padding: 24px;
+  }
+
+  .card-resumo .numero {
+    font-size: 40px;
+    color: var(--dourado);
+    line-height: 1;
+  }
+
+  .card-resumo .rotulo {
+    font-family: 'Helvetica Neue', Arial, sans-serif;
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: var(--cinza-texto);
+    margin-top: 8px;
+  }
+
+  section {
+    margin-bottom: 48px;
+  }
+
+  h2 {
+    font-size: 22px;
+    font-weight: 400;
+    margin-bottom: 20px;
+    padding-bottom: 12px;
+    border-bottom: 1px solid rgba(201, 162, 39, 0.25);
+  }
+
+  .lista-competicoes {
+    display: grid;
+    gap: 1px;
+    background: rgba(201, 162, 39, 0.15);
+  }
+
+  .linha-competicao {
+    background: var(--verde-escuro);
+    padding: 16px 20px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-family: 'Helvetica Neue', Arial, sans-serif;
+  }
+
+  .nome-competicao {
+    font-size: 15px;
+  }
+
+  .badge {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    padding: 4px 10px;
+    border: 1px solid var(--dourado);
+    color: var(--dourado);
+    border-radius: 2px;
+  }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-family: 'Helvetica Neue', Arial, sans-serif;
+    font-size: 14px;
+  }
+
+  th {
+    text-align: left;
+    padding: 12px;
+    color: var(--cinza-texto);
+    text-transform: uppercase;
+    font-size: 11px;
+    letter-spacing: 0.05em;
+    border-bottom: 1px solid rgba(201, 162, 39, 0.25);
+  }
+
+  td {
+    padding: 12px;
+    border-bottom: 1px solid rgba(201, 162, 39, 0.1);
+  }
+
+  .placar {
+    color: var(--dourado);
+    font-weight: bold;
+  }
+
+  .estado-carregando, .estado-erro {
+    padding: 40px;
+    text-align: center;
+    color: var(--cinza-texto);
+    font-family: 'Helvetica Neue', Arial, sans-serif;
+  }
+
+  .estado-erro {
+    color: var(--vermelho-erro);
+  }
+
+  code {
+    background: rgba(0,0,0,0.3);
+    padding: 2px 6px;
+    border-radius: 3px;
+    font-size: 13px;
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="marca">Golstats</div>
+  <h1>Painel de validação de dados</h1>
+  <p class="subtitulo">Visualização direta do que está gravado no banco — pra confirmar que o pipeline API-Football → Supabase está funcionando antes de construir o produto final.</p>
+</header>
+
+<main>
+  <div class="resumo" id="resumo">
+    <div class="card-resumo"><div class="numero">—</div><div class="rotulo">Competições</div></div>
+    <div class="card-resumo"><div class="numero">—</div><div class="rotulo">Times</div></div>
+    <div class="card-resumo"><div class="numero">—</div><div class="rotulo">Partidas</div></div>
+  </div>
+
+  <section>
+    <h2>Competições sincronizadas</h2>
+    <div class="lista-competicoes" id="listaCompeticoes">
+      <div class="estado-carregando">Carregando...</div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Últimas partidas gravadas</h2>
+    <table id="tabelaPartidas">
+      <thead>
+        <tr><th>Data</th><th>Casa</th><th>Placar</th><th>Fora</th><th>Competição</th></tr>
+      </thead>
+      <tbody>
+        <tr><td colspan="5" class="estado-carregando">Carregando...</td></tr>
+      </tbody>
+    </table>
+  </section>
+</main>
+
+<script>
+  // ===== CONFIGURAÇÃO =====
+  // Preencha com os dados do SEU projeto Supabase.
+  // A chave "anon" é segura pra usar aqui no navegador (diferente da service_role),
+  // desde que as tabelas tenham RLS com policy de leitura pública (já configurado
+  // no arquivo sql/rls_leitura_publica.sql).
+  const SUPABASE_URL = 'https://szdtepdndrqcixgdqxad.supabase.co';
+  const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InN6ZHRlcGRuZHJxY2l4Z2RxeGFkIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQzMDUzODMsImV4cCI6MjA5OTg4MTM4M30.Z1TdPzoGJZ6002t9mz0dsoPC6ds7KOptM9J4ZNTPogk';
+  // ==========================
+
+  async function supabaseGet(tabela, query = '') {
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/${tabela}?${query}`, {
+      headers: {
+        'apikey': SUPABASE_ANON_KEY,
+        'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
+      },
+    });
+    if (!res.ok) throw new Error(`Erro ao buscar ${tabela}: ${res.status}`);
+    return res.json();
+  }
+
+  function mostrarErro(mensagem) {
+    document.getElementById('listaCompeticoes').innerHTML =
+      `<div class="estado-erro">Erro: ${mensagem}<br><br>Confira se SUPABASE_URL e SUPABASE_ANON_KEY estão preenchidos corretamente no código, e se o arquivo sql/rls_leitura_publica.sql já foi rodado no Supabase.</div>`;
+  }
+
+  async function carregar() {
+    if (SUPABASE_URL.includes('COLE_') || SUPABASE_ANON_KEY.includes('COLE_')) {
+      mostrarErro('configure SUPABASE_URL e SUPABASE_ANON_KEY no topo do arquivo HTML.');
+      return;
+    }
+
+    try {
+      const [competicoes, times, partidas] = await Promise.all([
+        supabaseGet('competicoes', 'select=*&order=prioridade.asc'),
+        supabaseGet('times', 'select=id&limit=1000'),
+        supabaseGet('partidas', 'select=*,time_casa:times!partidas_time_casa_id_fkey(nome),time_fora:times!partidas_time_fora_id_fkey(nome),competicoes(nome)&order=data_hora.desc&limit=1000'),
+      ]);
+
+      // Resumo
+      document.getElementById('resumo').innerHTML = `
+        <div class="card-resumo"><div class="numero">${competicoes.length}</div><div class="rotulo">Competições</div></div>
+        <div class="card-resumo"><div class="numero">${times.length}</div><div class="rotulo">Times</div></div>
+        <div class="card-resumo"><div class="numero">${partidas.length}</div><div class="rotulo">Partidas</div></div>
+      `;
+
+      // Lista de competições
+      const listaEl = document.getElementById('listaCompeticoes');
+      if (competicoes.length === 0) {
+        listaEl.innerHTML = '<div class="estado-erro">Nenhuma competição encontrada. Rode "npm run sync" primeiro.</div>';
+      } else {
+        listaEl.innerHTML = competicoes.map(c => `
+          <div class="linha-competicao">
+            <span class="nome-competicao">${c.nome}</span>
+            <span class="badge">${c.prioridade}</span>
+          </div>
+        `).join('');
+      }
+
+      // Tabela de partidas (mostra as 30 mais recentes)
+      const corpoTabela = document.querySelector('#tabelaPartidas tbody');
+      const partidasComResultado = partidas.filter(p => p.gols_casa !== null).slice(0, 30);
+
+      if (partidasComResultado.length === 0) {
+        corpoTabela.innerHTML = '<tr><td colspan="5" class="estado-erro">Nenhuma partida finalizada encontrada.</td></tr>';
+      } else {
+        corpoTabela.innerHTML = partidasComResultado.map(p => {
+          const data = new Date(p.data_hora).toLocaleDateString('pt-BR');
+          const nomeCasa = p.time_casa?.nome || '—';
+          const nomeFora = p.time_fora?.nome || '—';
+          return `
+            <tr>
+              <td>${data}</td>
+              <td>${nomeCasa}</td>
+              <td class="placar">${p.gols_casa} × ${p.gols_fora}</td>
+              <td>${nomeFora}</td>
+              <td>${p.competicoes?.nome || '—'}</td>
+            </tr>
+          `;
+        }).join('');
+      }
+
+    } catch (err) {
+      mostrarErro(err.message);
+      console.error(err);
+    }
+  }
+
+  carregar();
+</script>
+
+</body>
+</html>
