@@ -1,0 +1,11 @@
+name: Teste simples
+
+on:
+  workflow_dispatch: {}
+
+jobs:
+  teste:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Diz oi
+        run: echo "Funcionou!"
