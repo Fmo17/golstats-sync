@@ -222,32 +222,65 @@ function extrairStat(statsArray, tipo) {
  * Busca estatísticas de partidas já finalizadas que ainda não têm registro
  * em `estatisticas_partida`, e grava. Respeita um limite de partidas por
  * execução pra não estourar a quota diária (cada partida = 1 requisição).
+ *
+ * IMPORTANTE: distribui a cota em RODÍZIO entre as competições ativas --
+ * antes, a busca pegava só "as 500 mais recentes de todas juntas", o que
+ * viciava a cobertura pra sempre a mesma competição (Série A ficou com 31%
+ * enquanto Série C ficou com 0%). Agora cada competição recebe uma fatia
+ * justa da cota a cada execução, garantindo que todas cresçam juntas.
  */
 async function syncEstatisticas(limite = 80) {
-  console.log(`\nBuscando partidas finalizadas sem estatísticas (limite: ${limite})...`);
+  console.log(`\nBuscando partidas finalizadas sem estatísticas (limite: ${limite}, em rodízio entre competições)...`);
 
-  // Busca partidas finalizadas
-  const { data: partidasFinalizadas, error: errPartidas } = await supabase
-    .from('partidas')
-    .select('id, api_football_id, time_casa_id, time_fora_id')
-    .eq('status', 'finalizado')
-    .limit(500);
+  const { data: competicoesAtivas, error: errComp } = await supabase
+    .from('competicoes')
+    .select('id, nome')
+    .eq('ativa', true);
+  if (errComp) throw errComp;
 
-  if (errPartidas) throw errPartidas;
-
-  // Busca quais partidas já têm estatísticas gravadas
   const { data: jaTemStats, error: errStats } = await supabase
     .from('estatisticas_partida')
     .select('partida_id');
-
   if (errStats) throw errStats;
 
   const idsComStats = new Set(jaTemStats.map((s) => s.partida_id));
-  const pendentes = partidasFinalizadas
-    .filter((p) => !idsComStats.has(p.id))
-    .slice(0, limite);
 
-  console.log(`  ${pendentes.length} partidas pendentes de estatísticas (de ${partidasFinalizadas.length} finalizadas)`);
+  // Busca as partidas pendentes de CADA competição separadamente (mais
+  // recentes primeiro dentro de cada uma).
+  const pendentesPorCompeticao = [];
+  for (const comp of competicoesAtivas) {
+    const { data: partidasDaCompeticao, error: errP } = await supabase
+      .from('partidas')
+      .select('id, api_football_id, time_casa_id, time_fora_id')
+      .eq('competicao_id', comp.id)
+      .eq('status', 'finalizado')
+      .order('data_hora', { ascending: false })
+      .limit(200);
+    if (errP) throw errP;
+
+    const pendentes = (partidasDaCompeticao || []).filter((p) => !idsComStats.has(p.id));
+    if (pendentes.length > 0) {
+      pendentesPorCompeticao.push({ nome: comp.nome, fila: pendentes });
+    }
+  }
+
+  console.log('  Pendentes por competição:');
+  for (const c of pendentesPorCompeticao) console.log(`    ${c.nome}: ${c.fila.length} partidas`);
+
+  // Rodízio: pega 1 partida de cada competição por vez, até atingir o limite
+  // ou esgotar todas as filas.
+  const pendentes = [];
+  let indice = 0;
+  while (pendentes.length < limite) {
+    const algumaFilaTemItem = pendentesPorCompeticao.some((c) => c.fila.length > 0);
+    if (!algumaFilaTemItem) break;
+
+    const c = pendentesPorCompeticao[indice % pendentesPorCompeticao.length];
+    if (c.fila.length > 0) pendentes.push(c.fila.shift());
+    indice++;
+  }
+
+  console.log(`  ${pendentes.length} partidas selecionadas pra essa execução (distribuídas entre competições)`);
 
   let processadas = 0;
   for (const partida of pendentes) {
@@ -328,17 +361,22 @@ async function main() {
   }
 
   for (const compSeed of competicoesParaSync) {
-    try {
-      // Nota: o plano Free da API-Football só dá acesso a temporadas 2022-2024.
-      // Pra testar em produção com dados atuais (2025/2026), será necessário
-      // upgrade de plano (ex: Ultra, ~R$148/mês). Por enquanto usamos 2023
-      // pra validar que toda a estrutura (schema + sync) funciona corretamente.
-      const comp = await upsertCompeticao({ ...compSeed, temporada: 2023 });
-      const totalJogos = await syncFixtures(comp);
-      await logSync('fixtures', comp.id, 'sucesso', `${totalJogos} jogos`);
-    } catch (err) {
-      console.error(`Erro ao sincronizar ${compSeed.nome}:`, err.message);
-      await logSync('fixtures', null, 'erro', err.message);
+    // O plano Free da API-Football libera 3 temporadas: 2022, 2023 e 2024.
+    // Sincronizamos as três pra ter mais profundidade histórica (importante
+    // pro modelo estatístico ter amostra suficiente) -- todas ficam
+    // registradas sob a mesma competição, já que cada partida tem um ID
+    // próprio da API, sem conflito entre temporadas.
+    const TEMPORADAS_DISPONIVEIS_FREE = [2022, 2023, 2024];
+
+    for (const temporada of TEMPORADAS_DISPONIVEIS_FREE) {
+      try {
+        const comp = await upsertCompeticao({ ...compSeed, temporada });
+        const totalJogos = await syncFixtures(comp);
+        await logSync('fixtures', comp.id, 'sucesso', `temporada ${temporada}: ${totalJogos} jogos`);
+      } catch (err) {
+        console.error(`Erro ao sincronizar ${compSeed.nome} (temporada ${temporada}):`, err.message);
+        await logSync('fixtures', null, 'erro', `temporada ${temporada}: ${err.message}`);
+      }
     }
   }
 
