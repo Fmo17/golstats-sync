@@ -581,7 +581,25 @@ async function modoGerar(competicaoArg) {
 
   console.log(`Sinais gerados: ${totalGerados}`);
   if (totalGerados === 0) {
-    console.log('(Nenhuma partida com status "agendado" encontrada -- normal enquanto só temos temporadas já finalizadas.)');
+    const { data: proximoJogoQualquer } = await supabase
+      .from('partidas')
+      .select('data_hora')
+      .eq('status', 'agendado')
+      .gte('data_hora', new Date().toISOString())
+      .order('data_hora', { ascending: true })
+      .limit(1)
+      .maybeSingle();
+
+    if (proximoJogoQualquer) {
+      const dias = Math.ceil((new Date(proximoJogoQualquer.data_hora) - new Date()) / 86400000);
+      if (dias > JANELA_DIAS_GERACAO) {
+        console.log(`(Nenhum sinal gerado -- o próximo jogo agendado está em ${dias} dia(s) (${new Date(proximoJogoQualquer.data_hora).toLocaleDateString('pt-BR')}), fora da janela de ${JANELA_DIAS_GERACAO} dias. Normal se houver uma pausa no calendário das competições ativas.)`);
+      } else {
+        console.log(`(Nenhum sinal NOVO gerado -- existem jogos dentro da janela de ${JANELA_DIAS_GERACAO} dias (o mais próximo em ${dias} dia(s)), mas provavelmente já têm sinal gerado de uma execução anterior. Isso é esperado, o sistema evita duplicar.)`);
+      }
+    } else {
+      console.log('(Nenhuma partida com status "agendado" encontrada no banco -- pode ser preciso rodar o sync de jogos de novo.)');
+    }
   }
 }
 
