@@ -21,16 +21,41 @@ jobs:
       - name: Instalar dependências
         run: npm install
 
-      - name: Sincronizar jogos e competições
+      - name: Sincronizar jogos (temporada atual, todas as competições)
         env:
           API_FOOTBALL_KEY: ${{ secrets.API_FOOTBALL_KEY }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
         run: node scripts/sync.js
 
-      - name: Sincronizar estatísticas de partidas (respeitando a quota)
+      - name: Corrigir jogos "agendados" presos no passado
         env:
           API_FOOTBALL_KEY: ${{ secrets.API_FOOTBALL_KEY }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
-        run: node scripts/sync.js --stats --limite=80
+        run: node scripts/sync.js --corrigir-agendados
+
+      - name: Sincronizar estatísticas de partidas (plano pago, ritmo mais rápido)
+        env:
+          API_FOOTBALL_KEY: ${{ secrets.API_FOOTBALL_KEY }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: node scripts/sync.js --stats --limite=1500 --pausa=500
+
+      - name: Recalibrar mercados
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: node scripts/gerar-sinais.js --calibrar
+
+      - name: Gerar sinais pra jogos futuros
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: node scripts/gerar-sinais.js --gerar
+
+      - name: Verificar sinais contra resultados reais
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: node scripts/verificar-sinais.js

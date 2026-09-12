@@ -11,6 +11,8 @@
  * Uso:
  *   node scripts/sync.js                 -> roda sync padrão (competições ativas)
  *   node scripts/sync.js --competicao=71  -> roda só uma competição (id da api-football)
+ *   node scripts/sync.js --stats --limite=80                 -> sync de estatísticas, rodízio entre todas
+ *   node scripts/sync.js --stats --limite=10 --competicao=71 -> sync de estatísticas só de 1 competição (útil pra testar xG)
  */
 
 import 'dotenv/config';
@@ -44,7 +46,8 @@ const COMPETICOES_SEED = [
   { nome: 'Copa do Brasil', api_football_id: 73, tipo: 'copa', prioridade: 'alta' },
 
   // Média prioridade: sync a cada 2-3 dias
-  { nome: 'Serie C', api_football_id: 75, tipo: 'nacional', prioridade: 'media' },
+  // Serie C removida em 10/09/2026 -- API-Football confirmadamente não tem
+  // dado de estatística (posse/finalizações/escanteios) pra essa competição.
   { nome: 'Copa do Nordeste', api_football_id: 612, tipo: 'copa', prioridade: 'media' },
   { nome: 'Paulista - A1', api_football_id: 475, tipo: 'estadual', prioridade: 'media' },
   { nome: 'Carioca - 1', api_football_id: 624, tipo: 'estadual', prioridade: 'media' },
@@ -53,6 +56,17 @@ const COMPETICOES_SEED = [
 
   // Baixa prioridade: sync semanal
   { nome: 'Serie D', api_football_id: 76, tipo: 'nacional', prioridade: 'baixa' },
+
+  // Ligas internacionais -- IDs confirmados via scripts/checar-cobertura-paises.js
+  { nome: 'Bundesliga', api_football_id: 78, tipo: 'nacional', prioridade: 'alta', pais: 'Germany' },
+  { nome: 'Serie A Itália', api_football_id: 135, tipo: 'nacional', prioridade: 'alta', pais: 'Italy' },
+  { nome: 'Ligue 1', api_football_id: 61, tipo: 'nacional', prioridade: 'alta', pais: 'France' },
+  { nome: 'La Liga', api_football_id: 140, tipo: 'nacional', prioridade: 'alta', pais: 'Spain' },
+  { nome: 'Premier League', api_football_id: 39, tipo: 'nacional', prioridade: 'alta', pais: 'England' },
+  { nome: 'Primeira Liga', api_football_id: 94, tipo: 'nacional', prioridade: 'media', pais: 'Portugal' },
+  { nome: 'MLS', api_football_id: 253, tipo: 'nacional', prioridade: 'media', pais: 'USA' },
+  { nome: 'Pro League Saudita', api_football_id: 307, tipo: 'nacional', prioridade: 'media', pais: 'Saudi-Arabia' },
+  { nome: 'Liga Profesional Argentina', api_football_id: 128, tipo: 'nacional', prioridade: 'media', pais: 'Argentina' },
 ];
 
 // Estaduais adicionais disponíveis, caso queira expandir depois:
@@ -196,12 +210,54 @@ async function syncFixtures(competicao) {
 }
 
 function mapStatus(shortStatus) {
-  const finalizados = ['FT', 'AET', 'PEN'];
-  const aoVivo = ['1H', '2H', 'HT', 'ET', 'P', 'LIVE'];
+  // Códigos reais da API-Football (documentação de fixture status).
+  const finalizados = ['FT', 'AET', 'PEN', 'AWD', 'WO']; // inclui vitória por W.O. e decisão administrativa -- têm resultado definido
+  const aoVivo = ['1H', '2H', 'HT', 'ET', 'P', 'LIVE', 'BT', 'SUSP', 'INT'];
+  const cancelados = ['PST', 'CANC', 'ABD', 'TBD']; // adiado, cancelado, abandonado, sem data definida -- NUNCA deve virar "agendado"
 
   if (finalizados.includes(shortStatus)) return 'finalizado';
   if (aoVivo.includes(shortStatus)) return 'ao_vivo';
-  return 'agendado';
+  if (cancelados.includes(shortStatus)) return 'cancelado';
+  return 'agendado'; // só "NS" (not started) e códigos desconhecidos caem aqui -- jogo realmente futuro
+}
+
+/**
+ * Corrige retroativamente jogos que já ficaram presos como "agendado" no
+ * passado (dado antigo, sincronizado antes dessa correção existir). Marca
+ * como "cancelado" os que não têm placar, e "finalizado" os que têm.
+ */
+async function corrigirAgendadosDoPassado() {
+  const agora = new Date().toISOString();
+  const { data: presos, error } = await supabase
+    .from('partidas')
+    .select('id, gols_casa, gols_fora')
+    .eq('status', 'agendado')
+    .lt('data_hora', agora);
+
+  if (error) throw error;
+  if (!presos || presos.length === 0) {
+    console.log('Nenhum jogo "agendado do passado" encontrado -- nada pra corrigir.');
+    return;
+  }
+
+  console.log(`Encontrados ${presos.length} jogos "agendado" com data no passado. Corrigindo...`);
+
+  let corrigidosFinalizado = 0;
+  let corrigidosCancelado = 0;
+
+  for (const p of presos) {
+    const novoStatus = p.gols_casa !== null && p.gols_fora !== null ? 'finalizado' : 'cancelado';
+    const { error: errUpdate } = await supabase.from('partidas').update({ status: novoStatus }).eq('id', p.id);
+    if (errUpdate) {
+      console.error(`  Erro ao corrigir partida ${p.id}:`, errUpdate.message);
+      continue;
+    }
+    if (novoStatus === 'finalizado') corrigidosFinalizado++;
+    else corrigidosCancelado++;
+  }
+
+  console.log(`  -> ${corrigidosFinalizado} corrigidos pra "finalizado" (tinham placar)`);
+  console.log(`  -> ${corrigidosCancelado} corrigidos pra "cancelado" (sem placar registrado)`);
 }
 
 /**
@@ -228,22 +284,44 @@ function extrairStat(statsArray, tipo) {
  * viciava a cobertura pra sempre a mesma competição (Série A ficou com 31%
  * enquanto Série C ficou com 0%). Agora cada competição recebe uma fatia
  * justa da cota a cada execução, garantindo que todas cresçam juntas.
+ *
+ * @param {number} limite - máximo de partidas processadas nessa execução
+ * @param {number|null} apenasCompeticaoApiId - se informado, ignora o
+ *   rodízio e busca SÓ dessa competição (útil pra testar um campo novo,
+ *   tipo xG, numa competição específica antes de rodar em todas)
  */
-async function syncEstatisticas(limite = 80) {
-  console.log(`\nBuscando partidas finalizadas sem estatísticas (limite: ${limite}, em rodízio entre competições)...`);
+async function syncEstatisticas(limite = 80, apenasCompeticaoApiId = null, pausaEntreChamadas = 1000) {
+  console.log(`\nBuscando partidas finalizadas sem estatísticas (limite: ${limite}${apenasCompeticaoApiId ? `, só competição ${apenasCompeticaoApiId}` : ', em rodízio entre competições'})...`);
 
-  const { data: competicoesAtivas, error: errComp } = await supabase
-    .from('competicoes')
-    .select('id, nome')
-    .eq('ativa', true);
+  let queryCompeticoes = supabase.from('competicoes').select('id, nome, api_football_id').eq('ativa', true);
+  if (apenasCompeticaoApiId) queryCompeticoes = queryCompeticoes.eq('api_football_id', apenasCompeticaoApiId);
+
+  const { data: competicoesAtivas, error: errComp } = await queryCompeticoes;
   if (errComp) throw errComp;
 
-  const { data: jaTemStats, error: errStats } = await supabase
-    .from('estatisticas_partida')
-    .select('partida_id');
-  if (errStats) throw errStats;
+  // IMPORTANTE: o Supabase corta silenciosamente em 1000 linhas se não
+  // especificarmos um range -- com a tabela já passando disso, isso causava
+  // duplicação (o script "esquecia" que partidas antigas já tinham
+  // estatística, e reprocessava). Pagina em blocos de 1000 até esgotar.
+  const idsComStats = new Set();
+  {
+    let pagina = 0;
+    const TAMANHO_PAGINA = 1000;
+    while (true) {
+      const { data: blocoStats, error: errStats } = await supabase
+        .from('estatisticas_partida')
+        .select('partida_id')
+        .range(pagina * TAMANHO_PAGINA, pagina * TAMANHO_PAGINA + TAMANHO_PAGINA - 1);
+      if (errStats) throw errStats;
+      if (!blocoStats || blocoStats.length === 0) break;
 
-  const idsComStats = new Set(jaTemStats.map((s) => s.partida_id));
+      for (const s of blocoStats) idsComStats.add(s.partida_id);
+
+      if (blocoStats.length < TAMANHO_PAGINA) break; // última página
+      pagina++;
+    }
+  }
+  console.log(`  (${idsComStats.size} partidas já têm estatística registrada, buscadas com paginação completa)`);
 
   // Busca as partidas pendentes de CADA competição separadamente (mais
   // recentes primeiro dentro de cada uma).
@@ -268,7 +346,8 @@ async function syncEstatisticas(limite = 80) {
   for (const c of pendentesPorCompeticao) console.log(`    ${c.nome}: ${c.fila.length} partidas`);
 
   // Rodízio: pega 1 partida de cada competição por vez, até atingir o limite
-  // ou esgotar todas as filas.
+  // ou esgotar todas as filas. Com apenas 1 competição na lista (modo teste),
+  // isso vira simplesmente "as N mais recentes daquela competição".
   const pendentes = [];
   let indice = 0;
   while (pendentes.length < limite) {
@@ -280,22 +359,27 @@ async function syncEstatisticas(limite = 80) {
     indice++;
   }
 
-  console.log(`  ${pendentes.length} partidas selecionadas pra essa execução (distribuídas entre competições)`);
+  console.log(`  ${pendentes.length} partidas selecionadas pra essa execução`);
+  console.log(`  IDs internos (partida_id) selecionados: ${pendentes.map((p) => p.id).join(', ')}`);
 
   let processadas = 0;
+  let comXgPreenchido = 0;
+  let gravacoesComSucesso = 0;
+  let errosGravacao = 0;
+
   for (const partida of pendentes) {
     try {
-      // Plano Free permite só 10 requisições por minuto -> aguarda 6.5s entre
-      // chamadas pra nunca bater no limite (6.5s x 10 = 65s de folga por minuto).
-      await sleep(6500);
+      // No plano Free, o limite era 10 req/min (por isso a pausa de 6.5s).
+      // No plano pago, o limite por minuto é maior -- reduzimos a pausa, e
+      // contamos com o retry automático em caso de 429 (rate limit) como
+      // rede de segurança, caso ainda seja baixo demais.
+      await sleep(pausaEntreChamadas);
 
       const response = await apiFetch('fixtures/statistics', { fixture: partida.api_football_id });
 
       if (!response || response.length === 0) continue;
 
       for (const teamStats of response) {
-        const timeId = teamStats.team.id === undefined ? null : teamStats.team.id;
-        // Descobre se é o time da casa ou de fora comparando api_football_id
         const { data: timeLocal } = await supabase
           .from('times')
           .select('id')
@@ -305,8 +389,10 @@ async function syncEstatisticas(limite = 80) {
         if (!timeLocal) continue;
 
         const stats = teamStats.statistics;
+        const xg = extrairStat(stats, 'Expected Goals');
+        if (xg !== null) comXgPreenchido++;
 
-        await supabase.from('estatisticas_partida').insert({
+        const { error: erroInsert } = await supabase.from('estatisticas_partida').insert({
           partida_id: partida.id,
           time_id: timeLocal.id,
           posse_bola: extrairStat(stats, 'Ball Possession'),
@@ -315,7 +401,15 @@ async function syncEstatisticas(limite = 80) {
           escanteios: extrairStat(stats, 'Corner Kicks'),
           cartoes_amarelos: extrairStat(stats, 'Yellow Cards'),
           cartoes_vermelhos: extrairStat(stats, 'Red Cards'),
+          xg: xg,
         });
+
+        if (erroInsert) {
+          errosGravacao++;
+          console.error(`  Erro ao GRAVAR estatística (partida ${partida.api_football_id}, time ${timeLocal.id}):`, erroInsert.message);
+        } else {
+          gravacoesComSucesso++;
+        }
       }
 
       processadas++;
@@ -324,8 +418,13 @@ async function syncEstatisticas(limite = 80) {
     }
   }
 
-  console.log(`  -> ${processadas} partidas processadas`);
-  await logSync('fixtures/statistics', null, 'sucesso', `${processadas} partidas`);
+  console.log(`  -> ${processadas} partidas processadas (resposta da API recebida)`);
+  console.log(`  -> ${gravacoesComSucesso} registros de estatística GRAVADOS com sucesso no banco`);
+  if (errosGravacao > 0) {
+    console.log(`  -> ⚠️  ${errosGravacao} registros FALHARAM ao gravar (ver mensagens de erro acima)`);
+  }
+  console.log(`  -> xG veio preenchido em ${comXgPreenchido} dos ${gravacoesComSucesso} registros gravados (${gravacoesComSucesso > 0 ? ((comXgPreenchido / gravacoesComSucesso) * 100).toFixed(1) : 0}%)`);
+  await logSync('fixtures/statistics', null, 'sucesso', `${processadas} partidas, xG em ${comXgPreenchido}`);
   return processadas;
 }
 
@@ -336,6 +435,7 @@ async function main() {
   const args = process.argv.slice(2);
   const listarFlag = args.includes('--listar');
   const statsFlag = args.includes('--stats');
+  const corrigirFlag = args.includes('--corrigir-agendados');
   const competicaoArg = args.find((a) => a.startsWith('--competicao='));
   const limiteArg = args.find((a) => a.startsWith('--limite='));
 
@@ -345,9 +445,17 @@ async function main() {
     return;
   }
 
+  if (corrigirFlag) {
+    await corrigirAgendadosDoPassado();
+    return;
+  }
+
   if (statsFlag) {
     const limite = limiteArg ? parseInt(limiteArg.split('=')[1], 10) : 80;
-    await syncEstatisticas(limite);
+    const apenasCompeticaoApiId = competicaoArg ? parseInt(competicaoArg.split('=')[1], 10) : null;
+    const pausaArg = args.find((a) => a.startsWith('--pausa='));
+    const pausaEntreChamadas = pausaArg ? parseInt(pausaArg.split('=')[1], 10) : 1000;
+    await syncEstatisticas(limite, apenasCompeticaoApiId, pausaEntreChamadas);
     console.log(`\n=== Sync de estatísticas finalizado. Requisições usadas: ${requisicoesUsadas} ===`);
     return;
   }
@@ -360,15 +468,35 @@ async function main() {
     competicoesParaSync = COMPETICOES_SEED.filter((c) => c.api_football_id === id);
   }
 
-  for (const compSeed of competicoesParaSync) {
-    // O plano Free da API-Football libera 3 temporadas: 2022, 2023 e 2024.
-    // Sincronizamos as três pra ter mais profundidade histórica (importante
-    // pro modelo estatístico ter amostra suficiente) -- todas ficam
-    // registradas sob a mesma competição, já que cada partida tem um ID
-    // próprio da API, sem conflito entre temporadas.
-    const TEMPORADAS_DISPONIVEIS_FREE = [2022, 2023, 2024];
+  // Controle de quais temporadas sincronizar, priorizando SEMPRE o mais
+  // recente primeiro -- pra cobrir todas as ligas com dado atual antes de
+  // "aprofundar" pros anos antigos (evita gastar toda a cota numa liga só).
+  //
+  //   node scripts/sync.js                        -> só a temporada atual (2026), todas as ligas
+  //   node scripts/sync.js --temporada=2025        -> só 2025, todas as ligas
+  //   node scripts/sync.js --temporada=2025,2024   -> 2025 e 2024, todas as ligas
+  //   node scripts/sync.js --todas-temporadas      -> 2010 até 2026 (uso pontual, é bastante chamada)
+  const TEMPORADA_ATUAL = 2026;
+  const temporadaArg = args.find((a) => a.startsWith('--temporada='));
+  const todasTemporadasFlag = args.includes('--todas-temporadas');
 
-    for (const temporada of TEMPORADAS_DISPONIVEIS_FREE) {
+  let temporadasParaSync;
+  if (todasTemporadasFlag) {
+    temporadasParaSync = [];
+    for (let ano = TEMPORADA_ATUAL; ano >= 2010; ano--) temporadasParaSync.push(ano);
+  } else if (temporadaArg) {
+    temporadasParaSync = temporadaArg.split('=')[1].split(',').map((a) => parseInt(a, 10));
+  } else {
+    temporadasParaSync = [TEMPORADA_ATUAL];
+  }
+
+  console.log(`Temporadas nessa execução: ${temporadasParaSync.join(', ')}\n`);
+
+  // Loop por TEMPORADA primeiro, depois por liga -- assim, se a execução for
+  // interrompida no meio, todas as ligas já têm pelo menos a temporada mais
+  // recente sincronizada, em vez de uma liga só ter todas e as outras nenhuma.
+  for (const temporada of temporadasParaSync) {
+    for (const compSeed of competicoesParaSync) {
       try {
         const comp = await upsertCompeticao({ ...compSeed, temporada });
         const totalJogos = await syncFixtures(comp);
@@ -377,6 +505,7 @@ async function main() {
         console.error(`Erro ao sincronizar ${compSeed.nome} (temporada ${temporada}):`, err.message);
         await logSync('fixtures', null, 'erro', `temporada ${temporada}: ${err.message}`);
       }
+      await sleep(1000); // pequena folga entre chamadas, mesmo no plano pago
     }
   }
 

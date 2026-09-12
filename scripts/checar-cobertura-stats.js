@@ -1,10 +1,10 @@
 /**
  * checar-cobertura-stats.js
  *
- * Antes de tentar construir um modelo pra escanteios ou cartões, precisamos
- * saber: quantas partidas realmente têm esse dado sincronizado? (lembra que
- * o --stats só processa um lote por execução, então a cobertura pode estar
- * bem incompleta ainda).
+ * Verifica quantas partidas finalizadas de uma competição já têm dado de
+ * escanteios/cartões/posse/finalizações -- com PAGINAÇÃO COMPLETA, pra nunca
+ * mais bater no limite silencioso de 1000 linhas do Supabase (bug que
+ * causava contagem de cobertura sempre errada em ligas com muitos jogos).
  *
  * Uso:
  *   node scripts/checar-cobertura-stats.js --competicao=71
@@ -13,15 +13,29 @@
 import 'dotenv/config';
 import { createClient } from '@supabase/supabase-js';
 
-const SUPABASE_URL = process.env.SUPABASE_URL;
-const SUPABASE_KEY = process.env.SUPABASE_KEY;
+const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
 
-if (!SUPABASE_URL || !SUPABASE_KEY) {
-  console.error('Faltam variáveis de ambiente: SUPABASE_URL, SUPABASE_KEY');
-  process.exit(1);
+/**
+ * Busca TODAS as linhas de uma tabela que batem com um filtro, paginando em
+ * blocos de 1000 até esgotar -- nunca confia no limite padrão do Supabase.
+ */
+async function buscarTudoPaginado(query) {
+  const TAMANHO_PAGINA = 1000;
+  let pagina = 0;
+  let todos = [];
+
+  while (true) {
+    const { data, error } = await query.range(pagina * TAMANHO_PAGINA, pagina * TAMANHO_PAGINA + TAMANHO_PAGINA - 1);
+    if (error) throw error;
+    if (!data || data.length === 0) break;
+
+    todos = todos.concat(data);
+    if (data.length < TAMANHO_PAGINA) break;
+    pagina++;
+  }
+
+  return todos;
 }
-
-const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
 async function main() {
   const args = process.argv.slice(2);
@@ -31,56 +45,50 @@ async function main() {
   const { data: comp } = await supabase.from('competicoes').select('id, nome').eq('api_football_id', apiFootballId).single();
   if (!comp) { console.error('Competição não encontrada.'); return; }
 
-  const { count: totalPartidas } = await supabase
-    .from('partidas')
-    .select('*', { count: 'exact', head: true })
-    .eq('competicao_id', comp.id)
-    .eq('status', 'finalizado');
-
-  const { data: partidasIds } = await supabase
-    .from('partidas')
-    .select('id')
-    .eq('competicao_id', comp.id)
-    .eq('status', 'finalizado');
-
-  const idsPartidas = (partidasIds || []).map((p) => p.id);
-
-  const { data: statsExistentes } = await supabase
-    .from('estatisticas_partida')
-    .select('partida_id, escanteios, cartoes_amarelos, posse_bola, finalizacoes, finalizacoes_no_gol')
-    .in('partida_id', idsPartidas);
-
-  const partidasComEscanteios = new Set(
-    (statsExistentes || []).filter((s) => s.escanteios !== null).map((s) => s.partida_id)
+  const partidas = await buscarTudoPaginado(
+    supabase.from('partidas').select('id').eq('competicao_id', comp.id).eq('status', 'finalizado')
   );
-  const partidasComCartoes = new Set(
-    (statsExistentes || []).filter((s) => s.cartoes_amarelos !== null).map((s) => s.partida_id)
-  );
-  const partidasComPosse = new Set(
-    (statsExistentes || []).filter((s) => s.posse_bola !== null).map((s) => s.partida_id)
-  );
-  const partidasComFinalizacoes = new Set(
-    (statsExistentes || []).filter((s) => s.finalizacoes !== null).map((s) => s.partida_id)
-  );
-  const partidasComFinalizacoesNoGol = new Set(
-    (statsExistentes || []).filter((s) => s.finalizacoes_no_gol !== null).map((s) => s.partida_id)
-  );
+  const totalPartidas = partidas.length;
+  const idsPartidas = partidas.map((p) => p.id);
 
-  console.log(`=== Cobertura de dados: ${comp.nome} ===\n`);
+  console.log(`Total de partidas finalizadas (contagem real, paginada): ${totalPartidas}`);
+
+  // Busca as estatísticas em blocos de 500 IDs por vez (pra não estourar o
+  // tamanho da URL da consulta `.in()` com milhares de IDs de uma vez).
+  let statsExistentes = [];
+  for (let i = 0; i < idsPartidas.length; i += 500) {
+    const loteIds = idsPartidas.slice(i, i + 500);
+    const bloco = await buscarTudoPaginado(
+      supabase.from('estatisticas_partida')
+        .select('partida_id, escanteios, cartoes_amarelos, posse_bola, finalizacoes, finalizacoes_no_gol')
+        .in('partida_id', loteIds)
+    );
+    statsExistentes = statsExistentes.concat(bloco);
+  }
+
+  const contar = (campo) => new Set(statsExistentes.filter((s) => s[campo] !== null).map((s) => s.partida_id)).size;
+
+  const comEscanteios = contar('escanteios');
+  const comCartoes = contar('cartoes_amarelos');
+  const comPosse = contar('posse_bola');
+  const comFinalizacoes = contar('finalizacoes');
+  const comFinalizacoesNoGol = contar('finalizacoes_no_gol');
+
+  console.log(`\n=== Cobertura de dados: ${comp.nome} ===\n`);
   console.log(`Total de partidas finalizadas: ${totalPartidas}`);
-  console.log(`Partidas com dado de ESCANTEIOS: ${partidasComEscanteios.size} (${((partidasComEscanteios.size / totalPartidas) * 100).toFixed(1)}%)`);
-  console.log(`Partidas com dado de CARTÕES: ${partidasComCartoes.size} (${((partidasComCartoes.size / totalPartidas) * 100).toFixed(1)}%)`);
-  console.log(`Partidas com dado de POSSE DE BOLA: ${partidasComPosse.size} (${((partidasComPosse.size / totalPartidas) * 100).toFixed(1)}%)`);
-  console.log(`Partidas com dado de FINALIZAÇÕES (total): ${partidasComFinalizacoes.size} (${((partidasComFinalizacoes.size / totalPartidas) * 100).toFixed(1)}%)`);
-  console.log(`Partidas com dado de FINALIZAÇÕES NO GOL: ${partidasComFinalizacoesNoGol.size} (${((partidasComFinalizacoesNoGol.size / totalPartidas) * 100).toFixed(1)}%)`);
+  console.log(`Partidas com dado de ESCANTEIOS: ${comEscanteios} (${((comEscanteios / totalPartidas) * 100).toFixed(1)}%)`);
+  console.log(`Partidas com dado de CARTÕES: ${comCartoes} (${((comCartoes / totalPartidas) * 100).toFixed(1)}%)`);
+  console.log(`Partidas com dado de POSSE DE BOLA: ${comPosse} (${((comPosse / totalPartidas) * 100).toFixed(1)}%)`);
+  console.log(`Partidas com dado de FINALIZAÇÕES (total): ${comFinalizacoes} (${((comFinalizacoes / totalPartidas) * 100).toFixed(1)}%)`);
+  console.log(`Partidas com dado de FINALIZAÇÕES NO GOL: ${comFinalizacoesNoGol} (${((comFinalizacoesNoGol / totalPartidas) * 100).toFixed(1)}%)`);
 
   const MINIMO_RECOMENDADO = 300;
   console.log(`\nPra um backtest minimamente confiável, recomendo pelo menos ~${MINIMO_RECOMENDADO} partidas com dado.`);
-  console.log(`Escanteios: ${partidasComEscanteios.size >= MINIMO_RECOMENDADO ? '✅ dado suficiente pra tentar' : '❌ ainda não tem dado suficiente'}`);
-  console.log(`Cartões: ${partidasComCartoes.size >= MINIMO_RECOMENDADO ? '✅ dado suficiente pra tentar' : '❌ ainda não tem dado suficiente'}`);
-  console.log(`Posse de bola: ${partidasComPosse.size >= MINIMO_RECOMENDADO ? '✅ dado suficiente pra tentar' : '❌ ainda não tem dado suficiente'}`);
-  console.log(`Finalizações: ${partidasComFinalizacoes.size >= MINIMO_RECOMENDADO ? '✅ dado suficiente pra tentar' : '❌ ainda não tem dado suficiente'}`);
-  console.log(`Finalizações no gol: ${partidasComFinalizacoesNoGol.size >= MINIMO_RECOMENDADO ? '✅ dado suficiente pra tentar' : '❌ ainda não tem dado suficiente'}`);
+  console.log(`Escanteios: ${comEscanteios >= MINIMO_RECOMENDADO ? '✅ dado suficiente pra tentar' : '❌ ainda não tem dado suficiente'}`);
+  console.log(`Cartões: ${comCartoes >= MINIMO_RECOMENDADO ? '✅ dado suficiente pra tentar' : '❌ ainda não tem dado suficiente'}`);
+  console.log(`Posse de bola: ${comPosse >= MINIMO_RECOMENDADO ? '✅ dado suficiente pra tentar' : '❌ ainda não tem dado suficiente'}`);
+  console.log(`Finalizações: ${comFinalizacoes >= MINIMO_RECOMENDADO ? '✅ dado suficiente pra tentar' : '❌ ainda não tem dado suficiente'}`);
+  console.log(`Finalizações no gol: ${comFinalizacoesNoGol >= MINIMO_RECOMENDADO ? '✅ dado suficiente pra tentar' : '❌ ainda não tem dado suficiente'}`);
 }
 
 main().catch((err) => { console.error('Erro:', err); process.exit(1); });
