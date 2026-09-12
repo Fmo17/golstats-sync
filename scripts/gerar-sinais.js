@@ -408,14 +408,18 @@ async function modoGerar(competicaoArg) {
   if (error) throw error;
 
   let totalGerados = 0;
+  const JANELA_DIAS_GERACAO = 5; // só gera sinal pra jogos dentro dessa janela -- mantém o dado usado no cálculo mais fresco, e evita sinal "congelado" muito antes do jogo acontecer
 
   for (const comp of competicoes) {
+    const limiteFuturo = new Date(Date.now() + JANELA_DIAS_GERACAO * 86400000).toISOString();
+
     const { data: partidasAgendadas } = await supabase
       .from('partidas')
       .select('id, data_hora, time_casa_id, time_fora_id')
       .eq('competicao_id', comp.id)
       .eq('status', 'agendado')
-      .gte('data_hora', new Date().toISOString()); // nunca gera sinal pra "agendado" do passado (jogo adiado/cancelado que não foi reclassificado)
+      .gte('data_hora', new Date().toISOString()) // nunca gera sinal pra "agendado" do passado (jogo adiado/cancelado que não foi reclassificado)
+      .lte('data_hora', limiteFuturo); // só os próximos N dias
 
     if (!partidasAgendadas || partidasAgendadas.length === 0) continue;
 
