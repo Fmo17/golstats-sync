@@ -98,7 +98,6 @@ async function main() {
       const { error: erroInsert } = await supabase.from('sinais_resultado').insert({
         sinal_id: sinal.id,
         acertou,
-        verificado_em: new Date().toISOString(),
       });
 
       if (erroInsert) {
