@@ -131,14 +131,14 @@ async function main() {
   const idsSinaisConferidos = todosConferidos.map((r) => r.sinal_id);
   const { data: sinaisComTipo } = await supabase
     .from('sinais')
-    .select('id, tipo_mercado')
+    .select('id, tipo_mercado, teve_valor, probabilidade_modelo')
     .in('id', idsSinaisConferidos);
 
-  const tipoPorSinalId = Object.fromEntries((sinaisComTipo || []).map((s) => [s.id, s.tipo_mercado]));
+  const infoPorSinalId = Object.fromEntries((sinaisComTipo || []).map((s) => [s.id, s]));
 
   const porMercado = {};
   for (const r of todosConferidos) {
-    const tipo = tipoPorSinalId[r.sinal_id] || 'desconhecido';
+    const tipo = infoPorSinalId[r.sinal_id]?.tipo_mercado || 'desconhecido';
     if (!porMercado[tipo]) porMercado[tipo] = { total: 0, acertos: 0 };
     porMercado[tipo].total++;
     if (r.acertou) porMercado[tipo].acertos++;
@@ -148,6 +148,42 @@ async function main() {
     const taxa = (dados.acertos / dados.total) * 100;
     console.log(`  ${tipo}: ${dados.acertos}/${dados.total} (${taxa.toFixed(1)}%)`);
   }
+
+  // ---------- Relatório separado: valor confirmado vs. alta confiança sem valor ----------
+  // Constrói a evidência de se o modelo tem razão quando diverge da odd.
+  console.log('\n=== Taxa de acerto REAL, separada por classificação de valor ===\n');
+
+  const grupos = { valorConfirmado: { total: 0, acertos: 0 }, altaConfiancaSemValor: { total: 0, acertos: 0 }, resto: { total: 0, acertos: 0 } };
+
+  for (const r of todosConferidos) {
+    const info = infoPorSinalId[r.sinal_id];
+    if (!info) continue;
+
+    let grupo;
+    if (info.teve_valor === true) grupo = 'valorConfirmado';
+    else if (info.teve_valor === false && info.probabilidade_modelo >= 0.70) grupo = 'altaConfiancaSemValor';
+    else if (info.teve_valor === false) grupo = 'resto';
+    else continue; // teve_valor null = nunca foi classificado (sem odd disponível na época) -- não entra nessa comparação
+
+    grupos[grupo].total++;
+    if (r.acertou) grupos[grupo].acertos++;
+  }
+
+  const rotulos = {
+    valorConfirmado: 'Valor confirmado (odd > mínima necessária)',
+    altaConfiancaSemValor: 'Alta confiança (≥70%) SEM valor confirmado',
+    resto: 'Demais sinais, sem valor confirmado',
+  };
+
+  for (const [chave, dados] of Object.entries(grupos)) {
+    if (dados.total === 0) { console.log(`  ${rotulos[chave]}: ainda sem casos conferidos.`); continue; }
+    const taxa = (dados.acertos / dados.total) * 100;
+    const aviso = dados.total < 30 ? '  ⚠️  amostra pequena ainda' : '';
+    console.log(`  ${rotulos[chave]}: ${dados.acertos}/${dados.total} (${taxa.toFixed(1)}%)${aviso}`);
+  }
+
+  console.log('\n(Isso responde, com dado real e ao longo do tempo, se os sinais de alta confiança que discordam');
+  console.log('do mercado realmente acertam mais -- em vez de assumir isso de antemão.)');
 }
 
 main().catch((err) => { console.error('Erro:', err); process.exit(1); });

@@ -54,6 +54,19 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
         run: node scripts/gerar-sinais.js --gerar
 
+      - name: Sincronizar odds reais
+        env:
+          API_FOOTBALL_KEY: ${{ secrets.API_FOOTBALL_KEY }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: node scripts/sync-odds.js --limite=200 --pausa=500
+
+      - name: Classificar valor dos sinais (compara com as odds reais)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: node scripts/encontrar-valor.js
+
       - name: Verificar sinais contra resultados reais
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
