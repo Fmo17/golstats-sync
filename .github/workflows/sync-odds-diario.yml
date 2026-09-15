@@ -1,0 +1,37 @@
+name: Sync de odds (2x ao dia)
+
+on:
+  schedule:
+    # 08:00 UTC = 05:00 Brasília
+    - cron: '0 8 * * *'
+    # 18:00 UTC = 15:00 Brasília
+    - cron: '0 18 * * *'
+  workflow_dispatch: {}
+
+jobs:
+  sync-odds:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout do código
+        uses: actions/checkout@v4
+
+      - name: Configurar Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Instalar dependências
+        run: npm install
+
+      - name: Sincronizar odds de TODOS os jogos de hoje, todas as ligas
+        env:
+          API_FOOTBALL_KEY: ${{ secrets.API_FOOTBALL_KEY }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: node scripts/sync-odds.js --apenas-hoje --limite=1000 --pausa=500
+
+      - name: Reclassificar valor com as odds atualizadas
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: node scripts/encontrar-valor.js

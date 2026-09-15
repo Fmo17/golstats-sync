@@ -1,13 +1,16 @@
-name: Sync diário Golstats
+name: Atualizar resultados (a cada 2h)
 
 on:
   schedule:
-    # Roda 1x por dia às 06:00 UTC (03:00 horário de Brasília)
-    - cron: '0 6 * * *'
-  workflow_dispatch: {} # permite rodar manualmente pela aba Actions do GitHub
+    # A cada 2 horas, o dia inteiro -- pega jogos que acabaram de terminar,
+    # sem esperar a rotina completa da madrugada. Não mexe em estatísticas
+    # (posse/finalizações/etc) nem odds -- só jogos/resultado/sinais, que é
+    # rápido e barato (poucas requisições).
+    - cron: '0 */2 * * *'
+  workflow_dispatch: {}
 
 jobs:
-  sync:
+  atualizar:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout do código
@@ -21,7 +24,7 @@ jobs:
       - name: Instalar dependências
         run: npm install
 
-      - name: Sincronizar jogos (temporada atual, todas as competições)
+      - name: Sincronizar jogos (traz placar e status atualizado)
         env:
           API_FOOTBALL_KEY: ${{ secrets.API_FOOTBALL_KEY }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
@@ -34,25 +37,6 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
         run: node scripts/sync.js --corrigir-agendados
-
-      - name: Sincronizar estatísticas de partidas (plano pago, ritmo mais rápido)
-        env:
-          API_FOOTBALL_KEY: ${{ secrets.API_FOOTBALL_KEY }}
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
-        run: node scripts/sync.js --stats --limite=5000 --pausa=400
-
-      - name: Recalibrar mercados
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
-        run: node scripts/gerar-sinais.js --calibrar
-
-      - name: Gerar sinais pra jogos futuros
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
-        run: node scripts/gerar-sinais.js --gerar
 
       - name: Verificar sinais contra resultados reais
         env:

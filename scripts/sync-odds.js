@@ -47,20 +47,32 @@ function extrairOdd(bets, nomeMercado, nomeValor) {
 
 async function main() {
   const args = process.argv.slice(2);
-  const limite = args.find((a) => a.startsWith('--limite=')) ? parseInt(args.find((a) => a.startsWith('--limite=')).split('=')[1], 10) : 50;
+  const apenasHoje = args.includes('--apenas-hoje');
+  const limite = args.find((a) => a.startsWith('--limite=')) ? parseInt(args.find((a) => a.startsWith('--limite=')).split('=')[1], 10) : 1000;
   const pausa = args.find((a) => a.startsWith('--pausa=')) ? parseInt(args.find((a) => a.startsWith('--pausa=')).split('=')[1], 10) : 1000;
   const dias = args.find((a) => a.startsWith('--dias=')) ? parseInt(args.find((a) => a.startsWith('--dias=')).split('=')[1], 10) : 5;
 
-  const limiteFuturo = new Date(Date.now() + dias * 86400000).toISOString();
+  let dataInicio, dataFim, descricaoJanela;
 
-  console.log(`Buscando partidas agendadas nos próximos ${dias} dias (limite: ${limite} partidas)...\n`);
+  if (apenasHoje) {
+    const agora = new Date();
+    dataInicio = new Date(Date.UTC(agora.getUTCFullYear(), agora.getUTCMonth(), agora.getUTCDate(), 0, 0, 0)).toISOString();
+    dataFim = new Date(Date.UTC(agora.getUTCFullYear(), agora.getUTCMonth(), agora.getUTCDate(), 23, 59, 59)).toISOString();
+    descricaoJanela = 'só os jogos de HOJE';
+  } else {
+    dataInicio = new Date().toISOString();
+    dataFim = new Date(Date.now() + dias * 86400000).toISOString();
+    descricaoJanela = `próximos ${dias} dias`;
+  }
+
+  console.log(`Buscando partidas agendadas (${descricaoJanela}, limite: ${limite} partidas)...\n`);
 
   const { data: partidas, error } = await supabase
     .from('partidas')
     .select('id, api_football_id, data_hora, time_casa_id, time_fora_id')
     .eq('status', 'agendado')
-    .gte('data_hora', new Date().toISOString())
-    .lte('data_hora', limiteFuturo)
+    .gte('data_hora', dataInicio)
+    .lte('data_hora', dataFim)
     .order('data_hora', { ascending: true })
     .limit(limite);
 
