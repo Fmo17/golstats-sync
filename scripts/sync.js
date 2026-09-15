@@ -46,16 +46,11 @@ const COMPETICOES_SEED = [
   { nome: 'Copa do Brasil', api_football_id: 73, tipo: 'copa', prioridade: 'alta' },
 
   // Média prioridade: sync a cada 2-3 dias
-  // Serie C removida em 10/09/2026 -- API-Football confirmadamente não tem
-  // dado de estatística (posse/finalizações/escanteios) pra essa competição.
-  { nome: 'Copa do Nordeste', api_football_id: 612, tipo: 'copa', prioridade: 'media' },
-  { nome: 'Paulista - A1', api_football_id: 475, tipo: 'estadual', prioridade: 'media' },
-  { nome: 'Carioca - 1', api_football_id: 624, tipo: 'estadual', prioridade: 'media' },
-  { nome: 'Mineiro - 1', api_football_id: 629, tipo: 'estadual', prioridade: 'media' },
-  { nome: 'Gaúcho - 1', api_football_id: 477, tipo: 'estadual', prioridade: 'media' },
-
-  // Baixa prioridade: sync semanal
-  { nome: 'Serie D', api_football_id: 76, tipo: 'nacional', prioridade: 'baixa' },
+  // Serie C removida em 10/09/2026, Copa do Nordeste/Carioca/Mineiro/Gaúcho/
+  // Serie D removidas em 15/09/2026, e Paulista removida logo em seguida --
+  // API-Football confirmadamente não tem (ou tem muito pouco) dado de
+  // estatística disponível pra essas competições, mesmo depois de esgotar
+  // a fila de tentativas.
 
   // Ligas internacionais -- IDs confirmados via scripts/checar-cobertura-paises.js
   { nome: 'Bundesliga', api_football_id: 78, tipo: 'nacional', prioridade: 'alta', pais: 'Germany' },
@@ -366,6 +361,7 @@ async function syncEstatisticas(limite = 80, apenasCompeticaoApiId = null, pausa
   let comXgPreenchido = 0;
   let gravacoesComSucesso = 0;
   let errosGravacao = 0;
+  let semDadoDisponivel = 0;
 
   for (const partida of pendentes) {
     try {
@@ -377,7 +373,29 @@ async function syncEstatisticas(limite = 80, apenasCompeticaoApiId = null, pausa
 
       const response = await apiFetch('fixtures/statistics', { fixture: partida.api_football_id });
 
-      if (!response || response.length === 0) continue;
+      if (!response || response.length === 0) {
+        // A API não tem estatística pra esse jogo -- registra uma "tentativa
+        // vazia" (todos os campos null) pros 2 times, só pra NUNCA MAIS
+        // tentar de novo esse jogo em execuções futuras (economiza cota).
+        // Não conta como cobertura real, porque checar-cobertura-stats.js só
+        // conta linhas com campo preenchido -- essas ficam de fora da conta.
+        semDadoDisponivel++;
+        for (const timeId of [partida.time_casa_id, partida.time_fora_id]) {
+          await supabase.from('estatisticas_partida').insert({
+            partida_id: partida.id,
+            time_id: timeId,
+            posse_bola: null,
+            finalizacoes: null,
+            finalizacoes_no_gol: null,
+            escanteios: null,
+            cartoes_amarelos: null,
+            cartoes_vermelhos: null,
+            xg: null,
+          });
+        }
+        processadas++;
+        continue;
+      }
 
       for (const teamStats of response) {
         const { data: timeLocal } = await supabase
@@ -419,6 +437,7 @@ async function syncEstatisticas(limite = 80, apenasCompeticaoApiId = null, pausa
   }
 
   console.log(`  -> ${processadas} partidas processadas (resposta da API recebida)`);
+  console.log(`  -> ${semDadoDisponivel} sem estatística disponível na API (marcadas -- não serão tentadas de novo)`);
   console.log(`  -> ${gravacoesComSucesso} registros de estatística GRAVADOS com sucesso no banco`);
   if (errosGravacao > 0) {
     console.log(`  -> ⚠️  ${errosGravacao} registros FALHARAM ao gravar (ver mensagens de erro acima)`);
