@@ -43,7 +43,7 @@ function ajustarCorteParaFronteiraDia(dataset, indiceAlvo) {
 // baseline certo) quanto na validação (pra avaliar de verdade nessa região)
 function passaFiltroProducao(linha, mercadoChave) {
   if (mercadoChave === 'p1X') return linha.p1X > LIMIAR_1X_PRODUCAO;
-  if (mercadoChave === 'pX2') return linha.pX2 >= linha.p1X && linha.pX2 >= linha.p12;
+  if (mercadoChave === 'pX2') return linha.pX2 > linha.p1X && linha.pX2 >= linha.p12;
   return null; // gols não tem filtro de produção via Poisson (usa regra percentual, motor diferente)
 }
 
@@ -125,6 +125,28 @@ function main() {
         const bootFiltro = bootstrapDiferencaBrierPorDia(linhasFiltro, probsCalibradasFiltro, probsConstanteFiltro, resultadosFiltro);
         console.log(`  Bootstrap por dia (${bootFiltro.diasUnicos} dias) -- Platt vs constante DO FILTRO:`);
         console.log(`    diferença: ${bootFiltro.diferencaMedia.toFixed(4)}  |  IC95%: [${bootFiltro.intervalo95[0].toFixed(4)}, ${bootFiltro.intervalo95[1].toFixed(4)}]  |  ${bootFiltro.atravessaZero ? '⚠️  atravessa zero -- SEM evidência suficiente dentro do filtro' : '✅ não atravessa zero -- real mesmo dentro do filtro'}`);
+
+        // Quebra por competição, ESPECIFICAMENTE dentro do filtro (não o
+        // conjunto inteiro) -- pra saber se a vantagem dentro do filtro
+        // também não vem de uma liga só
+        console.log(`\n  --- Por competição, DENTRO do filtro ---`);
+        const porCompFiltro = {};
+        linhasFiltro.forEach((l, idxLocal) => {
+          if (!porCompFiltro[l.competicao_nome]) porCompFiltro[l.competicao_nome] = [];
+          porCompFiltro[l.competicao_nome].push(idxLocal);
+        });
+        for (const [nomeComp, indicesLocais] of Object.entries(porCompFiltro)) {
+          if (indicesLocais.length < 20) {
+            console.log(`    ${nomeComp.padEnd(28)} n=${indicesLocais.length}  (amostra pequena demais dentro do filtro)`);
+            continue;
+          }
+          const probsC = indicesLocais.map((i) => probsCalibradasFiltro[i]);
+          const resultadosC = indicesLocais.map((i) => resultadosFiltro[i]);
+          const brierC = brierScore(probsC, resultadosC);
+          const aucC = calcularAUC(probsC, resultadosC);
+          const taxaRealC = resultadosC.reduce((s, r) => s + (r ? 1 : 0), 0) / resultadosC.length;
+          console.log(`    ${nomeComp.padEnd(28)} n=${indicesLocais.length}  Brier=${brierC.toFixed(4)}  AUC=${aucC !== null ? aucC.toFixed(3) : 'n/a'}  taxa real=${(taxaRealC * 100).toFixed(1)}%`);
+        }
       } else {
         console.log(`\n--- Filtro de produção tem poucos casos ainda (treino=${treinoFiltrado.length}, validação=${validacaoFiltradaIdx.length}) -- pulando ---`);
       }
