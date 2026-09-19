@@ -40,11 +40,17 @@
  */
 
 import { readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { treinarPlatt, aplicarPlatt } from './lib/calibracao.js';
 import { brierScore, logLoss, calcularAUC, bootstrapDiferencaBrierPorDia } from './lib/metricas.js';
 
 const LIMIAR_1X_PRODUCAO = 0.65;
 const MINIMO_CASOS_COMPETICAO = 60;
+
+// Hash SHA256 do dataset no momento em que o protocolo foi congelado --
+// obtido com: certutil -hashfile experimentos\dataset-calibracao.json SHA256
+// Se o arquivo mudar UM BYTE que seja, o hash muda, e o teste é cancelado.
+const HASH_ESPERADO_DATASET = 'b5eece395054deb68762540ca0417127773d92c5b83953e5edd4e31ab7102b1e';
 
 function ajustarCorteParaFronteiraDia(dataset, indiceAlvo) {
   let i = indiceAlvo;
@@ -55,7 +61,29 @@ function ajustarCorteParaFronteiraDia(dataset, indiceAlvo) {
 
 function main() {
   const caminho = './experimentos/dataset-calibracao.json';
-  const dataset = JSON.parse(readFileSync(caminho, 'utf-8'));
+
+  // ---------- Trava 1: hash do arquivo, verificado ANTES de sequer ler o JSON ----------
+  const conteudoDataset = readFileSync(caminho);
+  const hashAtual = createHash('sha256').update(conteudoDataset).digest('hex');
+
+  if (HASH_ESPERADO_DATASET === 'PENDENTE_AGUARDANDO_CERTUTIL') {
+    console.error('❌ HASH_ESPERADO_DATASET ainda não foi preenchido -- rode certutil e preencha antes de continuar.');
+    process.exitCode = 1;
+    return;
+  }
+
+  if (hashAtual !== HASH_ESPERADO_DATASET) {
+    console.error('❌ TESTE FINAL CANCELADO -- o hash do dataset não bate com o protocolo congelado.');
+    console.error(`   Esperado: ${HASH_ESPERADO_DATASET}`);
+    console.error(`   Atual:    ${hashAtual}`);
+    console.error('   O arquivo foi alterado desde que o protocolo foi fechado. Não confie em nenhum resultado abaixo.');
+    process.exitCode = 1;
+    return;
+  }
+
+  console.log(`✅ Hash do dataset conferido -- bate exatamente com o protocolo congelado.\n`);
+
+  const dataset = JSON.parse(conteudoDataset.toString('utf-8'));
 
   const corteTreino = ajustarCorteParaFronteiraDia(dataset, Math.floor(dataset.length * 0.6));
   const corteValidacao = ajustarCorteParaFronteiraDia(dataset, Math.floor(dataset.length * 0.8));
@@ -68,9 +96,12 @@ function main() {
   console.log(`Treino: ${treino.length} (até ${treino[treino.length - 1]?.data_hora.slice(0, 10)})`);
   console.log(`Teste final: ${testeFinal.length} (a partir de ${testeFinal[0]?.data_hora.slice(0, 10)})\n`);
 
+  // ---------- Trava 2: tamanhos precisam bater EXATAMENTE, senão CANCELA de verdade ----------
   if (dataset.length !== 13669 || treino.length !== 8217 || testeFinal.length !== 2719) {
-    console.log('⚠️  ATENÇÃO: os tamanhos não batem com o protocolo registrado (13.669 / 8.217 / 2.719).');
-    console.log('   Isso pode indicar que o dataset foi alterado -- confira o hash SHA256 antes de confiar no resultado abaixo.\n');
+    console.error('❌ TESTE FINAL CANCELADO -- os tamanhos não batem com o protocolo registrado (13.669 / 8.217 / 2.719).');
+    console.error('   O dataset foi alterado. Não confie em nenhum resultado abaixo -- ele não foi calculado.');
+    process.exitCode = 1;
+    return;
   }
 
   // ---------- Calibrador: treinado EXCLUSIVAMENTE no treino ----------
@@ -137,16 +168,27 @@ function main() {
     if (!porComp[l.competicao_nome]) porComp[l.competicao_nome] = [];
     porComp[l.competicao_nome].push(i);
   });
+  let competicoesAvaliadas = 0;
+  let competicoesOndePlattVenceu = 0;
   for (const [nome, indices] of Object.entries(porComp)) {
     if (indices.length < 10) { console.log(`  ${nome}: n=${indices.length} (amostra pequena)`); continue; }
     const pC = indices.map((i) => probsCalibradas[i]);
     const pB = indices.map((i) => probsBaseline[i]);
     const rC = indices.map((i) => resultados[i]);
-    console.log(`  ${nome.padEnd(28)} n=${indices.length}  Brier Platt=${brierScore(pC, rC).toFixed(4)}  Brier baseline=${brierScore(pB, rC).toFixed(4)}`);
+    const brierCComp = brierScore(pC, rC);
+    const brierBComp = brierScore(pB, rC);
+    competicoesAvaliadas++;
+    if (brierCComp < brierBComp) competicoesOndePlattVenceu++;
+    console.log(`  ${nome.padEnd(28)} n=${indices.length}  Brier Platt=${brierCComp.toFixed(4)}  Brier baseline=${brierBComp.toFixed(4)}  dif=${(brierBComp - brierCComp).toFixed(4)}  ${brierCComp < brierBComp ? '(Platt venceu)' : '(baseline venceu)'}`);
   }
+  console.log(`\n  Platt venceu em ${competicoesOndePlattVenceu} de ${competicoesAvaliadas} competições avaliadas (informativo -- não bloqueia sozinho a aprovação).`);
 
   console.log('\n\n=== VEREDITO (critérios definidos ANTES desse teste, sem ajuste posterior) ===');
-  const criterioPrincipal = brierPlatt < brierBaseline && !boot.atravessaZero;
+  // Critério direto e explícito: o limite SUPERIOR do intervalo precisa
+  // estar abaixo de zero -- "não atravessa zero" sozinho também aceitaria
+  // (em teoria) um intervalo inteiramente POSITIVO, que seria o oposto do
+  // que queremos.
+  const criterioPrincipal = brierPlatt < brierBaseline && boot.intervalo95[1] < 0;
   const criterioLogLoss = llPlatt <= llBaseline;
   const criterioAUC = aucPlatt !== null && aucPlatt > 0.5;
 
