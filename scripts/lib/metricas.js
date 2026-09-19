@@ -72,35 +72,65 @@ export function calcularAUC(probabilidades, resultados) {
 }
 
 /**
- * Bootstrap pareado -- reamostra o conjunto de validação (com reposição)
- * muitas vezes, recalcula "Brier do candidato A menos Brier do candidato B"
- * em cada reamostragem, e devolve o intervalo de 95% dessa diferença. Se
- * esse intervalo atravessar zero, não há evidência suficiente de que A é
- * realmente melhor que B -- pode ser só variação de amostra.
+ * Gerador de número pseudoaleatório com semente fixa (mulberry32) -- pra
+ * qualquer pessoa conseguir reproduzir EXATAMENTE o mesmo resultado do
+ * bootstrap, rodando de novo com a mesma semente.
  */
-export function bootstrapDiferencaBrier(probsA, probsB, resultados, repeticoes = 2000) {
-  const n = probsA.length;
-  const diferencas = [];
+export function criarGeradorSeed(seed) {
+  let s = seed;
+  return function () {
+    s |= 0;
+    s = (s + 0x6d2b79f5) | 0;
+    let t = Math.imul(s ^ (s >>> 15), 1 | s);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
 
+/**
+ * Bootstrap pareado, mas reamostrando DIAS inteiros (não partidas
+ * individuais) -- jogos do mesmo dia/rodada podem compartilhar contexto, e
+ * reamostrar linha a linha finge uma independência que pode não existir de
+ * verdade. `linhas` precisa ter um campo `data_hora` (mesmo dataset usado
+ * pras probabilidades).
+ */
+export function bootstrapDiferencaBrierPorDia(linhas, probsA, probsB, resultados, opcoes = {}) {
+  const repeticoes = opcoes.repeticoes ?? 2000;
+  const seed = opcoes.seed ?? 20260919;
+  const rng = criarGeradorSeed(seed);
+
+  const indicesPorDia = {};
+  linhas.forEach((l, i) => {
+    const dia = l.data_hora.slice(0, 10);
+    if (!indicesPorDia[dia]) indicesPorDia[dia] = [];
+    indicesPorDia[dia].push(i);
+  });
+  const dias = Object.keys(indicesPorDia);
+
+  const diferencas = [];
   for (let r = 0; r < repeticoes; r++) {
-    let somaA = 0, somaB = 0;
-    for (let i = 0; i < n; i++) {
-      const idx = Math.floor(Math.random() * n); // reamostragem com reposição
-      const y = resultados[idx] ? 1 : 0;
-      somaA += Math.pow(probsA[idx] - y, 2);
-      somaB += Math.pow(probsB[idx] - y, 2);
+    let somaA = 0, somaB = 0, n = 0;
+    for (let d = 0; d < dias.length; d++) {
+      const diaSorteado = dias[Math.floor(rng() * dias.length)];
+      for (const idx of indicesPorDia[diaSorteado]) {
+        const y = resultados[idx] ? 1 : 0;
+        somaA += Math.pow(probsA[idx] - y, 2);
+        somaB += Math.pow(probsB[idx] - y, 2);
+        n++;
+      }
     }
-    diferencas.push(somaA / n - somaB / n);
+    if (n > 0) diferencas.push(somaA / n - somaB / n);
   }
 
   diferencas.sort((a, b) => a - b);
-  const p2_5 = diferencas[Math.floor(repeticoes * 0.025)];
-  const p97_5 = diferencas[Math.floor(repeticoes * 0.975)];
+  const p2_5 = diferencas[Math.floor(diferencas.length * 0.025)];
+  const p97_5 = diferencas[Math.floor(diferencas.length * 0.975)];
 
   return {
-    diferencaMedia: diferencas.reduce((s, d) => s + d, 0) / repeticoes,
+    diferencaMedia: diferencas.reduce((s, d) => s + d, 0) / diferencas.length,
     intervalo95: [p2_5, p97_5],
     atravessaZero: p2_5 <= 0 && p97_5 >= 0,
+    diasUnicos: dias.length,
   };
 }
 

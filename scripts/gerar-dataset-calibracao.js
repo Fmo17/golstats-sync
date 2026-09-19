@@ -71,12 +71,13 @@ async function main() {
 
     console.log(`${comp.nome}: processando ${todasPartidas.length} partidas...`);
 
-    // Começa em 30% do histórico -- os primeiros jogos nunca teriam dado
-    // suficiente pro Poisson de qualquer forma (mesmo padrão usado nos
-    // scripts de validação já existentes)
-    const inicio = Math.floor(todasPartidas.length * 0.3);
-
-    for (let i = inicio; i < todasPartidas.length; i++) {
+    // Não usa mais um corte artificial baseado em % do total (isso usava o
+    // tamanho FINAL de cada competição, que só se conhece com o histórico
+    // completo -- inconsistente com o que a produção realmente sabe no
+    // momento de cada partida). Deixa a própria preverConfronto() decidir,
+    // partida por partida, se já tem histórico suficiente (ela já devolve
+    // null quando não tem).
+    for (let i = 0; i < todasPartidas.length; i++) {
       const partida = todasPartidas[i];
       const anteriores = partidasAntesDe(todasPartidas, partida);
 
