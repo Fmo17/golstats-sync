@@ -103,55 +103,88 @@ function main() {
       console.log(`  ${c.faixa}: previsto ${(c.probMedia * 100).toFixed(1)}% | real ${(c.taxaReal * 100).toFixed(1)}% | dif ${(c.diferenca * 100).toFixed(1)}pp (n=${c.n})`);
     }
 
-    // ---------- Dentro do filtro de produção, com BASELINE CORRIGIDO ----------
+    // ---------- Dentro do filtro de produção, com BASELINE POR COMPETIÇÃO ----------
+    // (não mais uma taxa global misturando todas as ligas -- a produção já
+    // usa uma taxa ESPECÍFICA por competição, com o mesmo mínimo de 60
+    // casos que sempre exigimos. Comparar o Platt com uma taxa global seria
+    // comparar com um concorrente mais fraco do que o que já está em
+    // produção de verdade.)
     if (mercado.chave === 'p1X' || mercado.chave === 'pX2') {
+      const MINIMO_CASOS_COMPETICAO = 60;
+
       const treinoFiltrado = treino.filter((l) => passaFiltroProducao(l, mercado.chave));
+
+      // Taxa específica por competição, só onde o treino filtrado tem os
+      // 60 casos mínimos que a produção também exige
+      const treinoFiltradoPorComp = {};
+      for (const l of treinoFiltrado) {
+        if (!treinoFiltradoPorComp[l.competicao_nome]) treinoFiltradoPorComp[l.competicao_nome] = [];
+        treinoFiltradoPorComp[l.competicao_nome].push(l);
+      }
+      const taxaPorCompeticao = {};
+      for (const [nomeComp, linhas] of Object.entries(treinoFiltradoPorComp)) {
+        if (linhas.length < MINIMO_CASOS_COMPETICAO) continue; // produção também não geraria taxa aqui
+        taxaPorCompeticao[nomeComp] = linhas.reduce((s, l) => s + (l[mercado.resultado] ? 1 : 0), 0) / linhas.length;
+      }
+
+      // Validação: só entra na comparação quem tem taxa de competição
+      // válida (senão a produção nem teria um baseline pra comparar)
       const validacaoFiltradaIdx = [];
-      validacao.forEach((l, i) => { if (passaFiltroProducao(l, mercado.chave)) validacaoFiltradaIdx.push(i); });
+      validacao.forEach((l, i) => {
+        if (passaFiltroProducao(l, mercado.chave) && taxaPorCompeticao[l.competicao_nome] !== undefined) {
+          validacaoFiltradaIdx.push(i);
+        }
+      });
 
-      if (treinoFiltrado.length >= 20 && validacaoFiltradaIdx.length >= 20) {
-        const taxaConstanteFiltro = treinoFiltrado.reduce((s, l) => s + (l[mercado.resultado] ? 1 : 0), 0) / treinoFiltrado.length;
-
+      if (validacaoFiltradaIdx.length >= 20) {
         const linhasFiltro = validacaoFiltradaIdx.map((i) => validacao[i]);
         const probsCalibradasFiltro = validacaoFiltradaIdx.map((i) => probsCalibradas[i]);
         const resultadosFiltro = validacaoFiltradaIdx.map((i) => resultadosValidacao[i]);
-        const probsConstanteFiltro = validacaoFiltradaIdx.map(() => taxaConstanteFiltro);
+        const probsBaselinePorComp = linhasFiltro.map((l) => taxaPorCompeticao[l.competicao_nome]);
 
-        console.log(`\n--- Dentro do filtro de produção (n treino filtrado=${treinoFiltrado.length}, n validação filtrada=${validacaoFiltradaIdx.length}) ---`);
-        console.log(`  Taxa constante DESSE filtro específico (treino filtrado): ${(taxaConstanteFiltro * 100).toFixed(1)}%  (era ${(taxaConstanteGeral * 100).toFixed(1)}% geral -- essa é a comparação justa)`);
+        console.log(`\n--- Dentro do filtro de produção, baseline POR COMPETIÇÃO (n validação=${validacaoFiltradaIdx.length}) ---`);
+        console.log(`  Competições com taxa própria válida (>=60 casos no treino filtrado): ${Object.keys(taxaPorCompeticao).length} de ${Object.keys(treinoFiltradoPorComp).length}`);
         avaliarConjunto(linhasFiltro, probsCalibradasFiltro, resultadosFiltro, 'Platt, dentro do filtro');
-        avaliarConjunto(linhasFiltro, probsConstanteFiltro, resultadosFiltro, 'Constante DO FILTRO (correta)');
+        avaliarConjunto(linhasFiltro, probsBaselinePorComp, resultadosFiltro, 'Taxa POR COMPETIÇÃO (a de produção)');
 
-        const bootFiltro = bootstrapDiferencaBrierPorDia(linhasFiltro, probsCalibradasFiltro, probsConstanteFiltro, resultadosFiltro);
-        console.log(`  Bootstrap por dia (${bootFiltro.diasUnicos} dias) -- Platt vs constante DO FILTRO:`);
-        console.log(`    diferença: ${bootFiltro.diferencaMedia.toFixed(4)}  |  IC95%: [${bootFiltro.intervalo95[0].toFixed(4)}, ${bootFiltro.intervalo95[1].toFixed(4)}]  |  ${bootFiltro.atravessaZero ? '⚠️  atravessa zero -- SEM evidência suficiente dentro do filtro' : '✅ não atravessa zero -- real mesmo dentro do filtro'}`);
+        const bootFiltro = bootstrapDiferencaBrierPorDia(linhasFiltro, probsCalibradasFiltro, probsBaselinePorComp, resultadosFiltro);
+        console.log(`  Bootstrap por dia (${bootFiltro.diasUnicos} dias) -- Platt vs taxa por competição:`);
+        console.log(`    diferença: ${bootFiltro.diferencaMedia.toFixed(4)}  |  IC95%: [${bootFiltro.intervalo95[0].toFixed(4)}, ${bootFiltro.intervalo95[1].toFixed(4)}]  |  ${bootFiltro.atravessaZero ? '⚠️  atravessa zero -- SEM evidência suficiente contra o baseline real de produção' : '✅ não atravessa zero -- real mesmo contra o baseline de produção'}`);
 
-        // Quebra por competição, ESPECIFICAMENTE dentro do filtro (não o
-        // conjunto inteiro) -- pra saber se a vantagem dentro do filtro
-        // também não vem de uma liga só
-        console.log(`\n  --- Por competição, DENTRO do filtro ---`);
+        // Quebra por competição, mostrando Platt vs baseline daquela
+        // competição especificamente, lado a lado
+        console.log(`\n  --- Por competição, dentro do filtro (Platt vs. taxa própria daquela liga) ---`);
         const porCompFiltro = {};
         linhasFiltro.forEach((l, idxLocal) => {
           if (!porCompFiltro[l.competicao_nome]) porCompFiltro[l.competicao_nome] = [];
           porCompFiltro[l.competicao_nome].push(idxLocal);
         });
         for (const [nomeComp, indicesLocais] of Object.entries(porCompFiltro)) {
+          const nTreinoComp = treinoFiltradoPorComp[nomeComp]?.length ?? 0;
           if (indicesLocais.length < 20) {
-            console.log(`    ${nomeComp.padEnd(28)} n=${indicesLocais.length}  (amostra pequena demais dentro do filtro)`);
+            console.log(`    ${nomeComp.padEnd(28)} n_treino=${nTreinoComp}  n_val=${indicesLocais.length}  (amostra pequena demais na validação)`);
             continue;
           }
           const probsC = indicesLocais.map((i) => probsCalibradasFiltro[i]);
+          const probsBaselineC = indicesLocais.map((i) => probsBaselinePorComp[i]);
           const resultadosC = indicesLocais.map((i) => resultadosFiltro[i]);
-          const brierC = brierScore(probsC, resultadosC);
+          const brierPlattC = brierScore(probsC, resultadosC);
+          const brierBaselineC = brierScore(probsBaselineC, resultadosC);
           const aucC = calcularAUC(probsC, resultadosC);
-          const taxaRealC = resultadosC.reduce((s, r) => s + (r ? 1 : 0), 0) / resultadosC.length;
-          console.log(`    ${nomeComp.padEnd(28)} n=${indicesLocais.length}  Brier=${brierC.toFixed(4)}  AUC=${aucC !== null ? aucC.toFixed(3) : 'n/a'}  taxa real=${(taxaRealC * 100).toFixed(1)}%`);
+          console.log(`    ${nomeComp.padEnd(28)} n_treino=${nTreinoComp}  n_val=${indicesLocais.length}  Brier Platt=${brierPlattC.toFixed(4)}  Brier taxa própria=${brierBaselineC.toFixed(4)}  dif=${(brierBaselineC - brierPlattC).toFixed(4)}  AUC=${aucC !== null ? aucC.toFixed(3) : 'n/a'}`);
+        }
+
+        const competicoesSemTaxaValida = Object.keys(treinoFiltradoPorComp).filter((c) => taxaPorCompeticao[c] === undefined);
+        if (competicoesSemTaxaValida.length > 0) {
+          console.log(`\n  (Excluídas dessa comparação, por não terem 60 casos filtrados no treino -- produção também não geraria sinal lá: ${competicoesSemTaxaValida.join(', ')})`);
         }
       } else {
-        console.log(`\n--- Filtro de produção tem poucos casos ainda (treino=${treinoFiltrado.length}, validação=${validacaoFiltradaIdx.length}) -- pulando ---`);
+        console.log(`\n--- Filtro de produção com baseline por competição: poucos casos válidos ainda (n=${validacaoFiltradaIdx.length}) -- pulando ---`);
       }
 
-      // ---------- Quebra por competição ----------
+      // ---------- Quebra por competição, no conjunto de validação INTEIRO ----------
+      // (complementa a de cima -- essa mostra discriminação/Brier em cada
+      // liga usando TODOS os jogos, não só os que passam no filtro)
       console.log(`\n--- Por competição (validação inteira, não só o filtro) ---`);
       const porCompeticao = {};
       validacao.forEach((l, i) => {
