@@ -55,9 +55,14 @@ function calcularMediasLiga(partidas, dataReferencia) {
   return { mediaGolsCasa: sc / sp, mediaGolsFora: sf / sp };
 }
 
+// CORRIGIDO em 2026-09-16: usava .slice(0, JANELA_JOGOS), que pega os N jogos
+// MAIS ANTIGOS de um array ordenado do mais antigo pro mais recente (bug
+// idêntico ao encontrado e corrigido no gerar-sinais.js). Agora usa
+// .slice(-JANELA_JOGOS), que pega os N mais RECENTES -- consistente com o
+// motor de produção.
 function calcularForcaTime(partidas, timeId, dataReferencia, mgc, mgf) {
-  const jc = partidas.filter((p) => p.time_casa_id === timeId).slice(0, JANELA_JOGOS);
-  const jf = partidas.filter((p) => p.time_fora_id === timeId).slice(0, JANELA_JOGOS);
+  const jc = partidas.filter((p) => p.time_casa_id === timeId).slice(-JANELA_JOGOS);
+  const jf = partidas.filter((p) => p.time_fora_id === timeId).slice(-JANELA_JOGOS);
   function media(jogos, pro, contra) {
     let sp2 = 0, sc2 = 0, sw = 0;
     for (const j of jogos) {
@@ -134,13 +139,10 @@ async function main() {
 
   const inicioTeste = Math.floor(todasPartidas.length * 0.3);
 
-  // Contadores 1x2
   let n = 0, acerto1x2 = 0, acertoBase1x2 = 0;
-  // Dupla hipótese: 1X, X2, 12
   let acerto1X = 0, acertoX2 = 0, acerto12 = 0;
   let vezesPrevista1X = 0, vezesPrevistaX2 = 0, vezesPrevista12 = 0;
   let base1X = 0, baseX2 = 0, base12 = 0;
-  // Gols 1+
   let acertoGol1Mais = 0, baseGol1Mais = 0;
 
   for (let i = inicioTeste; i < todasPartidas.length; i++) {
@@ -155,18 +157,15 @@ async function main() {
     else if (partida.gols_casa === partida.gols_fora) real = 'empate';
     else real = 'fora';
 
-    // 1x2
     const probs = { casa: previsao.pCasa, empate: previsao.pEmpate, fora: previsao.pFora };
     const previsto1x2 = Object.entries(probs).sort((a, b) => b[1] - a[1])[0][0];
     if (previsto1x2 === real) acerto1x2++;
     if (real === 'casa') acertoBase1x2++;
 
-    // Dupla hipótese: cada uma tem probabilidade combinada; "acerto" = o resultado real está dentro da dupla
     const p1X = previsao.pCasa + previsao.pEmpate;
     const pX2 = previsao.pEmpate + previsao.pFora;
     const p12 = previsao.pCasa + previsao.pFora;
 
-    // Prevemos "a dupla hipótese com maior probabilidade combinada, entre as 3"
     const duplas = { '1X': p1X, 'X2': pX2, '12': p12 };
     const previstaDupla = Object.entries(duplas).sort((a, b) => b[1] - a[1])[0][0];
 
@@ -178,12 +177,10 @@ async function main() {
     if (previstaDupla === 'X2') { vezesPrevistaX2++; if (resultouEmX2) acertoX2++; }
     if (previstaDupla === '12') { vezesPrevista12++; if (resultouEm12) acerto12++; }
 
-    // Linha de base de cada dupla = "sempre prever essa dupla especificamente"
     if (resultouEm1X) base1X++;
     if (resultouEmX2) baseX2++;
     if (resultouEm12) base12++;
 
-    // Gols 1+
     const golReal1Mais = (partida.gols_casa + partida.gols_fora) >= 1;
     const previuGol1Mais = previsao.pGol1Mais > 0.5;
     if (previuGol1Mais === golReal1Mais) acertoGol1Mais++;

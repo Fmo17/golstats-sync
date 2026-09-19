@@ -28,8 +28,6 @@ if (!SUPABASE_URL || !SUPABASE_KEY) {
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
-// ---------- Motor de gols esperados (reaproveitado do modelo de Poisson) ----------
-
 function pesoDecaimento(diasAtras, meiaVidaDias = 60) {
   return Math.pow(0.5, diasAtras / meiaVidaDias);
 }
@@ -47,9 +45,12 @@ function calcularMediasLiga(partidas, dataReferencia) {
   return { mediaGolsCasa: somaGolsCasa / somaPesos, mediaGolsFora: somaGolsFora / somaPesos };
 }
 
+// CORRIGIDO em 2026-09-16: mesmo bug do gerar-sinais.js e validar-mercados.js
+// -- .slice(0, janela) pegava os jogos mais ANTIGOS. Agora .slice(-janela)
+// pega os mais RECENTES.
 function calcularForcaTime(partidas, timeId, dataReferencia, mediaGolsCasaLiga, mediaGolsForaLiga, janela = 20) {
-  const jogosCasa = partidas.filter((p) => p.time_casa_id === timeId).slice(0, janela);
-  const jogosFora = partidas.filter((p) => p.time_fora_id === timeId).slice(0, janela);
+  const jogosCasa = partidas.filter((p) => p.time_casa_id === timeId).slice(-janela);
+  const jogosFora = partidas.filter((p) => p.time_fora_id === timeId).slice(-janela);
 
   function mediaComPeso(jogos, campoPro, campoContra) {
     let somaPro = 0, somaContra = 0, somaPesos = 0;
@@ -75,12 +76,11 @@ function calcularForcaTime(partidas, timeId, dataReferencia, mediaGolsCasaLiga, 
   };
 }
 
-// ---------- Helpers de estatística em janela (V/E/D, médias de gols) ----------
-
+// CORRIGIDO em 2026-09-16: mesmo bug -- .slice(0, janela) -> .slice(-janela)
 function jogosDoTime(partidas, timeId, mandante, janela) {
   return partidas
     .filter((p) => (mandante ? p.time_casa_id === timeId : p.time_fora_id === timeId))
-    .slice(0, janela);
+    .slice(-janela);
 }
 
 function taxaVitoria(jogos, mandante) {
@@ -106,8 +106,6 @@ function mediaGolsSofridos(jogos, timeId) {
   const soma = jogos.reduce((s, j) => s + (j.time_casa_id === timeId ? j.gols_fora : j.gols_casa), 0);
   return soma / jogos.length;
 }
-
-// ---------- Construção do vetor de variáveis completo ----------
 
 const NOMES_VARIAVEIS = [
   'Diferença de gols esperados (Poisson)',
@@ -170,8 +168,6 @@ function construirVariaveisCompletas(partidasAnteriores, timeCasaId, timeForaId,
 
   return vars;
 }
-
-// ---------- Regressão logística multinomial (softmax) ----------
 
 function softmax(z) {
   const m = Math.max(...z);
@@ -238,8 +234,6 @@ function prever(x, W, b, numClasses = 3) {
   }
   return softmax(z);
 }
-
-// ---------- Fluxo principal ----------
 
 async function main() {
   const args = process.argv.slice(2);
