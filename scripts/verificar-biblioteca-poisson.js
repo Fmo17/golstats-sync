@@ -172,6 +172,7 @@ async function main() {
   if (divergencias.length > 0) {
     console.log('❌ ENCONTREI DIVERGÊNCIAS -- não trocar em produção antes de investigar:\n');
     divergencias.slice(0, 5).forEach((d) => console.log(JSON.stringify(d, null, 2)));
+    process.exitCode = 1;
   } else {
     console.log('✅ 100% idêntico -- a biblioteca nova está matematicamente equivalente à antiga.');
     console.log('   Segura pra ser adotada em produção.');

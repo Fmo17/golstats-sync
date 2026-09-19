@@ -23,7 +23,7 @@
 
 import 'dotenv/config';
 import { createClient } from '@supabase/supabase-js';
-import { preverConfronto } from './lib/poisson.js';
+import { preverConfronto, partidasAntesDe } from './lib/poisson.js';
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_KEY;
@@ -210,7 +210,7 @@ async function calibrarCompeticao(competicaoId, nomeCompeticao) {
 
   for (let i = 0; i < todasPartidas.length; i++) {
     const partida = todasPartidas[i];
-    const anteriores = todasPartidas.slice(0, i);
+    const anteriores = partidasAntesDe(todasPartidas, partida);
     const anterioresComStats = todasPartidasComStats.filter((p) => new Date(p.data_hora) < new Date(partida.data_hora));
 
     const fator = calcularFatorCombinado(anteriores, partida.time_casa_id, partida.time_fora_id);

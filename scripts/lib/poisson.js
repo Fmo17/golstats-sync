@@ -23,6 +23,20 @@ export const MAX_GOLS = 8;
 export const MINIMO_JOGOS_PARA_PREVER = 6;
 export const RHO_DIXON_COLES = -0.13;
 
+/**
+ * Filtra corretamente "jogos que já aconteceram antes desse" -- usando a
+ * data_hora de verdade, não a posição no array. Isso importa porque
+ * `array.slice(0, i)` presume que tudo antes do índice i já aconteceu, mas
+ * isso só é verdade se NENHUMA partida tiver a mesma data_hora de outra --
+ * o que não é garantido (jogos simultâneos, comuns em rodadas finais de
+ * campeonato, quebram essa suposição e podem vazar resultado futuro pro
+ * histórico usado). Sempre use esse helper em vez de slice(0, i).
+ */
+export function partidasAntesDe(todasPartidasOrdenadas, partidaAlvo) {
+  const dataAlvo = new Date(partidaAlvo.data_hora).getTime();
+  return todasPartidasOrdenadas.filter((p) => new Date(p.data_hora).getTime() < dataAlvo);
+}
+
 function fatorial(n) {
   let r = 1;
   for (let i = 2; i <= n; i++) r *= i;

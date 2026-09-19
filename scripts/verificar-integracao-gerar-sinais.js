@@ -131,6 +131,7 @@ async function main() {
   } else {
     console.log('❌ DIVERGÊNCIAS ENCONTRADAS -- não usar em produção ainda:');
     [...divergenciasX2, ...divergencias1X].slice(0, 5).forEach((d) => console.log(JSON.stringify(d)));
+    process.exitCode = 1;
   }
 }
 
