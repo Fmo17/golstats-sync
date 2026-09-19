@@ -132,7 +132,7 @@ async function upsertCompeticao(comp) {
         api_football_id: comp.api_football_id,
         nome: comp.nome,
         tipo: comp.tipo || 'nacional',
-        pais: 'Brazil',
+        pais: comp.pais || 'Brazil',
         temporada: comp.temporada || new Date().getFullYear(),
         prioridade: comp.prioridade || 'media',
         ativa: true,
@@ -266,7 +266,9 @@ function extrairStat(statsArray, tipo) {
   if (typeof item.value === 'string' && item.value.includes('%')) {
     return parseFloat(item.value.replace('%', ''));
   }
-  return typeof item.value === 'number' ? item.value : parseFloat(item.value) || null;
+  if (typeof item.value === 'number') return item.value;
+  const convertido = parseFloat(item.value);
+  return Number.isNaN(convertido) ? null : convertido;
 }
 
 /**
@@ -322,16 +324,25 @@ async function syncEstatisticas(limite = 80, apenasCompeticaoApiId = null, pausa
   // recentes primeiro dentro de cada uma).
   const pendentesPorCompeticao = [];
   for (const comp of competicoesAtivas) {
-    const { data: partidasDaCompeticao, error: errP } = await supabase
-      .from('partidas')
-      .select('id, api_football_id, time_casa_id, time_fora_id')
-      .eq('competicao_id', comp.id)
-      .eq('status', 'finalizado')
-      .order('data_hora', { ascending: false })
-      .limit(200);
-    if (errP) throw errP;
+    let partidasDaCompeticao = [];
+    let pagina = 0;
+    const TAMANHO_PAGINA_PARTIDAS = 1000;
+    while (true) {
+      const { data: bloco, error: errP } = await supabase
+        .from('partidas')
+        .select('id, api_football_id, time_casa_id, time_fora_id')
+        .eq('competicao_id', comp.id)
+        .eq('status', 'finalizado')
+        .order('data_hora', { ascending: false })
+        .range(pagina * TAMANHO_PAGINA_PARTIDAS, pagina * TAMANHO_PAGINA_PARTIDAS + TAMANHO_PAGINA_PARTIDAS - 1);
+      if (errP) throw errP;
+      if (!bloco || bloco.length === 0) break;
+      partidasDaCompeticao = partidasDaCompeticao.concat(bloco);
+      if (bloco.length < TAMANHO_PAGINA_PARTIDAS) break;
+      pagina++;
+    }
 
-    const pendentes = (partidasDaCompeticao || []).filter((p) => !idsComStats.has(p.id));
+    const pendentes = partidasDaCompeticao.filter((p) => !idsComStats.has(p.id));
     if (pendentes.length > 0) {
       pendentesPorCompeticao.push({ nome: comp.nome, fila: pendentes });
     }
