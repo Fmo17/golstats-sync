@@ -1,2 +1,5 @@
 .env
 node_modules/
+
+# Dataset de calibracao (pode ser grande, e o ChatGPT pediu pra nao versionar)
+experimentos/*.json
