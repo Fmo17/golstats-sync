@@ -102,8 +102,12 @@ async function main() {
     const oddsDessaPartida = oddsRecentes.filter((o) => o.partida_id === sinal.partida_id && o[colunaOdd] !== null);
     if (oddsDessaPartida.length === 0) { semOddDisponivel++; continue; }
 
-    const melhorOdd = oddsDessaPartida.reduce((melhor, atual) => (atual[colunaOdd] > melhor[colunaOdd] ? atual : melhor));
-    const oddOferecida = melhorOdd[colunaOdd];
+    // Usa especificamente a odd da Bet365 -- mais consistente do que pegar
+    // "a melhor odd entre 9 casas diferentes", que muda de casa a cada jogo
+    const oddBet365 = oddsDessaPartida.find((o) => o.casa_apostas === 'Bet365');
+    if (!oddBet365) { semOddDisponivel++; continue; }
+
+    const oddOferecida = oddBet365[colunaOdd];
     const oddMinimaNecessaria = 1 / sinal.probabilidade_modelo;
     const divergencia = sinal.probabilidade_modelo - (1 / oddOferecida);
     const temValor = oddOferecida > oddMinimaNecessaria;
@@ -114,7 +118,7 @@ async function main() {
       .eq('id', sinal.id);
     if (!erroUpdate) atualizados++;
 
-    todosComOdd.push({ sinal, partida: partidaPorId[sinal.partida_id], oddOferecida, casaApostas: melhorOdd.casa_apostas, oddMinimaNecessaria, divergencia, temValor });
+    todosComOdd.push({ sinal, partida: partidaPorId[sinal.partida_id], oddOferecida, casaApostas: 'Bet365', oddMinimaNecessaria, divergencia, temValor });
   }
 
   // Ordena da divergência MAIS POSITIVA pra MAIS NEGATIVA -- mostra tudo, sem esconder nada

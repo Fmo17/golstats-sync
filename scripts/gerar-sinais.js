@@ -116,8 +116,8 @@ function calcularMediasLigaPoisson(partidas, dataReferencia) {
 }
 
 function calcularForcaTimePoisson(partidas, timeId, dataReferencia, mgc, mgf) {
-  const jc = partidas.filter((p) => p.time_casa_id === timeId).slice(0, JANELA_POISSON);
-  const jf = partidas.filter((p) => p.time_fora_id === timeId).slice(0, JANELA_POISSON);
+  const jc = partidas.filter((p) => p.time_casa_id === timeId).slice(-JANELA_POISSON);
+  const jf = partidas.filter((p) => p.time_fora_id === timeId).slice(-JANELA_POISSON);
   function media(jogos, pro, contra) {
     let sp2 = 0, sc2 = 0, sw = 0;
     for (const j of jogos) {
