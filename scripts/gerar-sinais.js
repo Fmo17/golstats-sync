@@ -23,6 +23,7 @@
 
 import 'dotenv/config';
 import { createClient } from '@supabase/supabase-js';
+import { preverConfronto } from './lib/poisson.js';
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_KEY;
@@ -85,105 +86,25 @@ function classificarFaixaGols(diffPercentual) {
 }
 
 // ---------- Motor de Poisson + Dixon-Coles (mercados X2 e 1X) ----------
+// O cálculo em si (médias da liga, força do time, matriz de probabilidade)
+// agora vive só em scripts/lib/poisson.js -- eliminado daqui pra nunca mais
+// existir uma cópia divergente (foi exatamente essa duplicação que causou
+// o bug do .slice(0,N) sobreviver escondido em 3 arquivos diferentes).
 
-const JANELA_POISSON = 25;
-const MEIA_VIDA_POISSON = 60;
-const MAX_GOLS_POISSON = 8;
-const RHO_DIXON_COLES = -0.13;
 const LIMIAR_1X = 0.65;
 
-function fatorialPoisson(n) { let r = 1; for (let i = 2; i <= n; i++) r *= i; return r; }
-function poisson(k, lambda) { return (Math.exp(-lambda) * Math.pow(lambda, k)) / fatorialPoisson(k); }
-function pesoDecaimentoPoisson(dias) { return Math.pow(0.5, dias / MEIA_VIDA_POISSON); }
-
-function ajusteDixonColes(gc, gf, lc, lf, rho) {
-  if (gc === 0 && gf === 0) return 1 - lc * lf * rho;
-  if (gc === 0 && gf === 1) return 1 + lc * rho;
-  if (gc === 1 && gf === 0) return 1 + lf * rho;
-  if (gc === 1 && gf === 1) return 1 - rho;
-  return 1;
-}
-
-function calcularMediasLigaPoisson(partidas, dataReferencia) {
-  let sc = 0, sf = 0, sp = 0;
-  for (const p of partidas) {
-    const dias = (new Date(dataReferencia) - new Date(p.data_hora)) / 86400000;
-    const peso = pesoDecaimentoPoisson(dias);
-    sc += p.gols_casa * peso; sf += p.gols_fora * peso; sp += peso;
-  }
-  if (sp === 0) return { mediaGolsCasa: 1.3, mediaGolsFora: 1.1 };
-  return { mediaGolsCasa: sc / sp, mediaGolsFora: sf / sp };
-}
-
-function calcularForcaTimePoisson(partidas, timeId, dataReferencia, mgc, mgf) {
-  const jc = partidas.filter((p) => p.time_casa_id === timeId).slice(-JANELA_POISSON);
-  const jf = partidas.filter((p) => p.time_fora_id === timeId).slice(-JANELA_POISSON);
-  function media(jogos, pro, contra) {
-    let sp2 = 0, sc2 = 0, sw = 0;
-    for (const j of jogos) {
-      const dias = (new Date(dataReferencia) - new Date(j.data_hora)) / 86400000;
-      const peso = pesoDecaimentoPoisson(dias);
-      sp2 += j[pro] * peso; sc2 += j[contra] * peso; sw += peso;
-    }
-    return sw > 0 ? { mediaPro: sp2 / sw, mediaContra: sc2 / sw } : null;
-  }
-  const emCasa = media(jc, 'gols_casa', 'gols_fora');
-  const fora = media(jf, 'gols_fora', 'gols_casa');
-  return {
-    totalJogos: jc.length + jf.length,
-    ataqueCasa: emCasa ? emCasa.mediaPro / mgc : 1,
-    defesaCasa: emCasa ? emCasa.mediaContra / mgf : 1,
-    ataqueFora: fora ? fora.mediaPro / mgf : 1,
-    defesaFora: fora ? fora.mediaContra / mgc : 1,
-  };
-}
-
-function preverProbabilidadesPoisson(gec, gef) {
-  const matriz = [];
-  let soma = 0;
-  for (let gc = 0; gc <= MAX_GOLS_POISSON; gc++) {
-    matriz[gc] = [];
-    for (let gf = 0; gf <= MAX_GOLS_POISSON; gf++) {
-      const base = poisson(gc, gec) * poisson(gf, gef);
-      const ajuste = ajusteDixonColes(gc, gf, gec, gef, RHO_DIXON_COLES);
-      matriz[gc][gf] = base * ajuste;
-      soma += matriz[gc][gf];
-    }
-  }
-  for (let gc = 0; gc <= MAX_GOLS_POISSON; gc++) for (let gf = 0; gf <= MAX_GOLS_POISSON; gf++) matriz[gc][gf] /= soma;
-  let pCasa = 0, pEmpate = 0, pFora = 0;
-  for (let gc = 0; gc <= MAX_GOLS_POISSON; gc++) {
-    for (let gf = 0; gf <= MAX_GOLS_POISSON; gf++) {
-      const p = matriz[gc][gf];
-      if (gc > gf) pCasa += p; else if (gc === gf) pEmpate += p; else pFora += p;
-    }
-  }
-  return { pCasa, pEmpate, pFora };
-}
-
 function preverX2(partidasAnteriores, timeCasaId, timeForaId, dataReferencia) {
-  const { mediaGolsCasa, mediaGolsFora } = calcularMediasLigaPoisson(partidasAnteriores, dataReferencia);
-  const fc = calcularForcaTimePoisson(partidasAnteriores, timeCasaId, dataReferencia, mediaGolsCasa, mediaGolsFora);
-  const ff = calcularForcaTimePoisson(partidasAnteriores, timeForaId, dataReferencia, mediaGolsCasa, mediaGolsFora);
-  if (fc.totalJogos < 6 || ff.totalJogos < 6) return null;
-  const gec = mediaGolsCasa * fc.ataqueCasa * ff.defesaFora;
-  const gef = mediaGolsFora * ff.ataqueFora * fc.defesaCasa;
-  const { pCasa, pEmpate, pFora } = preverProbabilidadesPoisson(gec, gef);
-  const p1X = pCasa + pEmpate, pX2 = pEmpate + pFora, p12 = pCasa + pFora;
-  const duplas = { '1X': p1X, 'X2': pX2, '12': p12 };
+  const previsao = preverConfronto(partidasAnteriores, timeCasaId, timeForaId, dataReferencia);
+  if (!previsao) return null;
+  const duplas = { '1X': previsao.p1X, 'X2': previsao.pX2, '12': previsao.p12 };
   const previstaDupla = Object.entries(duplas).sort((a, b) => b[1] - a[1])[0][0];
   return previstaDupla === 'X2';
 }
 
 function preverUm1X(partidasAnteriores, timeCasaId, timeForaId, dataReferencia) {
-  const { mediaGolsCasa, mediaGolsFora } = calcularMediasLigaPoisson(partidasAnteriores, dataReferencia);
-  const fc = calcularForcaTimePoisson(partidasAnteriores, timeCasaId, dataReferencia, mediaGolsCasa, mediaGolsFora);
-  const ff = calcularForcaTimePoisson(partidasAnteriores, timeForaId, dataReferencia, mediaGolsCasa, mediaGolsFora);
-  if (fc.totalJogos < 6 || ff.totalJogos < 6) return null;
-  const gec = mediaGolsCasa * fc.ataqueCasa * ff.defesaFora;
-  const gef = mediaGolsFora * ff.ataqueFora * fc.defesaCasa;
-  const { pCasa, pEmpate } = preverProbabilidadesPoisson(gec, gef);
-  return (pCasa + pEmpate) > LIMIAR_1X;
+  const previsao = preverConfronto(partidasAnteriores, timeCasaId, timeForaId, dataReferencia);
+  if (!previsao) return null;
+  return previsao.p1X > LIMIAR_1X;
 }
 
 // ---------- Força ponderada (8 quesitos, pesos fixos calculados na Série A) ----------
