@@ -26,12 +26,19 @@ const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY
 
 const LIMIAR_1X_PRODUCAO = 0.65;
 const MINIMO_CASOS_COMPETICAO = 60;
-// Só gera sinal pra jogos de HOJE -- alinhado com o sync-odds.js, que só
-// coleta odds pra jogos de hoje (--apenas-hoje). Se a janela aqui for mais
-// larga que a da coleta de odds, o sinal fica com odd_no_sinal = NULL pra
-// sempre (o campo é imutável, nunca é atualizado depois de criado).
+// Janela móvel de 5 dias -- IDÊNTICA ao padrão do sync-odds.js (que usa
+// Date.now() + dias*86400000, não dia civil). Usar dia civil aqui criaria
+// risco de fuso horário entre os 2 scripts. Rodar sempre nessa ordem:
+//   node scripts/sync-odds.js        (padrão já é 5 dias)
+//   node scripts/gerar-sinais-sombra-1x.js
+const JANELA_DIAS_A_FRENTE = 5;
 
-// Congelados no teste final aprovado -- nunca retreinados aqui
+// Congelados no teste final aprovado -- nunca retreinados aqui.
+// NOTA: a=0.6022 e b=0.3145 são os valores arredondados a 4 casas que
+// apareceram na tela do teste final -- esses 2 valores SÃO, oficialmente,
+// a definição de platt_1x_v1 (não uma aproximação de algo "mais preciso").
+// Se um dia recuperarmos os parâmetros com mais casas decimais, isso vira
+// uma versão nova (platt_1x_v2), não uma correção desta.
 const MODELO_VERSAO = 'platt_1x_v1';
 const DATASET_HASH = 'b5eece395054deb68762540ca0417127773d92c5b83953e5edd4e31ab7102b1e';
 const PARAMETRO_A = 0.6022;
@@ -99,20 +106,25 @@ async function main() {
     }
     const taxaBaseline = acertosBaseline / totalBaseline;
 
-    // Próximos jogos dessa competição -- só HOJE, batendo exatamente com a
-    // janela que o sync-odds.js usa pra coletar odds. Isso maximiza a
-    // chance de já existir uma odd real no momento da criação do sinal.
+    // Próximos jogos dessa competição -- janela móvel de 5 dias (não dia
+    // civil, pra não divergir do sync-odds.js por fuso horário), e status
+    // explícito ('agendado'), não por exclusão de 'finalizado' -- assim,
+    // se aparecer um status novo no futuro, ele não entra aqui sem querer.
     const agora = new Date();
-    const fimDeHoje = new Date(agora);
-    fimDeHoje.setHours(23, 59, 59, 999);
-    const { data: proximosJogos } = await supabase
+    const limiteFuturo = new Date(agora.getTime() + JANELA_DIAS_A_FRENTE * 86400000);
+    const { data: proximosJogos, error: erroProximosJogos } = await supabase
       .from('partidas')
       .select('id, time_casa_id, time_fora_id, data_hora, status')
       .eq('competicao_id', comp.id)
-      .neq('status', 'finalizado')
+      .eq('status', 'agendado')
       .gte('data_hora', agora.toISOString())
-      .lte('data_hora', fimDeHoje.toISOString())
+      .lte('data_hora', limiteFuturo.toISOString())
       .order('data_hora', { ascending: true });
+
+    if (erroProximosJogos) {
+      console.error(`${comp.nome}: erro ao buscar próximos jogos:`, erroProximosJogos.message);
+      continue;
+    }
 
     if (!proximosJogos || proximosJogos.length === 0) continue;
 
@@ -128,17 +140,30 @@ async function main() {
 
       const probabilidadePlatt = aplicarPlatt(previsao.p1X);
 
-      // Odd mais recente da Bet365 disponível AGORA (jogo ainda não
-      // aconteceu, então "mais recente" = a odd válida no instante da
-      // criação do sinal)
-      const { data: oddsRecentes } = await supabase
+      // Momento exato da decisão -- usado tanto pra limitar a busca de odd
+      // (só odds capturadas ATÉ esse instante) quanto como criado_em,
+      // garantindo matematicamente odd_no_sinal_em <= criado_em
+      const momentoSinal = new Date().toISOString();
+
+      // Odd mais recente da Bet365, capturada até o momento do sinal (nunca
+      // depois). Erro de consulta é tratado explicitamente -- NUNCA vira
+      // NULL silenciosamente, porque esse campo é imutável depois de
+      // gravado (um erro transiente não pode virar "odd indisponível" pra
+      // sempre).
+      const { data: oddsRecentes, error: erroOdds } = await supabase
         .from('odds_historico')
         .select('odd_dupla_1x, capturado_em')
         .eq('partida_id', jogo.id)
         .eq('casa_apostas', 'Bet365')
         .not('odd_dupla_1x', 'is', null)
+        .lte('capturado_em', momentoSinal)
         .order('capturado_em', { ascending: false })
         .limit(1);
+
+      if (erroOdds) {
+        console.error(`  Erro buscando odd da partida ${jogo.id}:`, erroOdds.message, '-- pulando esse jogo por agora.');
+        continue;
+      }
 
       const oddNoSinal = oddsRecentes?.[0]?.odd_dupla_1x ?? null;
       const oddNoSinalEm = oddsRecentes?.[0]?.capturado_em ?? null;
@@ -159,6 +184,7 @@ async function main() {
             probabilidade_baseline: taxaBaseline,
             odd_no_sinal: oddNoSinal,
             odd_no_sinal_em: oddNoSinalEm,
+            criado_em: momentoSinal,
           },
           { onConflict: 'partida_id,modelo_versao', ignoreDuplicates: true }
         )
