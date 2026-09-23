@@ -9,6 +9,11 @@ on:
     - cron: '0 */2 * * *'
   workflow_dispatch: {}
 
+# Impede que 2 execuções desse workflow rodem ao mesmo tempo
+concurrency:
+  group: atualizar-resultados
+  cancel-in-progress: false
+
 jobs:
   atualizar:
     runs-on: ubuntu-latest
@@ -43,3 +48,9 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
         run: node scripts/verificar-sinais.js
+
+      - name: Liquidar sinais sombra Dupla 1X (experimento isolado)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: node scripts/liquidar-sinais-sombra-1x.js

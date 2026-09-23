@@ -8,6 +8,13 @@ on:
     - cron: '0 18 * * *'
   workflow_dispatch: {}
 
+# Impede que 2 execuções desse workflow rodem ao mesmo tempo -- se uma
+# ainda estiver rodando quando o próximo horário chegar, a nova espera
+# (não cancela a que já está em andamento)
+concurrency:
+  group: sync-odds
+  cancel-in-progress: false
+
 jobs:
   sync-odds:
     runs-on: ubuntu-latest
@@ -23,15 +30,21 @@ jobs:
       - name: Instalar dependências
         run: npm install
 
-      - name: Sincronizar odds de TODOS os jogos de hoje, todas as ligas
+      - name: Sincronizar odds dos próximos 5 dias, todas as ligas
         env:
           API_FOOTBALL_KEY: ${{ secrets.API_FOOTBALL_KEY }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
-        run: node scripts/sync-odds.js --apenas-hoje --limite=1000 --pausa=500
+        run: node scripts/sync-odds.js --limite=1000 --pausa=500
 
       - name: Reclassificar valor com as odds atualizadas
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
         run: node scripts/encontrar-valor.js
+
+      - name: Gerar sinais sombra Dupla 1X (experimento isolado)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: node scripts/gerar-sinais-sombra-1x.js
