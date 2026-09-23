@@ -76,40 +76,15 @@ async function main() {
   let criados = 0;
   let jaExistiam = 0;
   let ignoradosPorFiltro = 0;
-  let ignoradosPorBaselineInsuficiente = 0;
+  let ignoradosPorHistoricoInsuficiente = 0; // preverConfronto() devolveu null pro jogo específico
+  let ignoradosPorCompeticaoSemHistorico = 0; // competição inteira sem os 60 jogos mínimos
+  let ignoradosPorBaselineInsuficiente = 0; // competição sem os 60 casos filtrados mínimos pro baseline
+  let totalJogosConsiderados = 0;
 
   for (const comp of competicoes) {
-    const todasPartidas = await buscarTudoPaginado(
-      supabase.from('partidas').select('id, data_hora, time_casa_id, time_fora_id, gols_casa, gols_fora')
-        .eq('competicao_id', comp.id).eq('status', 'finalizado').not('gols_casa', 'is', null)
-        .order('data_hora', { ascending: true })
-    );
-
-    if (todasPartidas.length < MINIMO_CASOS_COMPETICAO) continue;
-
-    // Baseline dessa competição: walk-forward em cima do próprio
-    // histórico, filtra p1X > 0.65, taxa real de acerto -- mesma
-    // metodologia validada no teste final, agora usando TODO o histórico
-    let acertosBaseline = 0, totalBaseline = 0;
-    for (let i = 0; i < todasPartidas.length; i++) {
-      const partida = todasPartidas[i];
-      const anteriores = partidasAntesDe(todasPartidas, partida);
-      const previsao = preverConfronto(anteriores, partida.time_casa_id, partida.time_fora_id, partida.data_hora);
-      if (!previsao || previsao.p1X <= LIMIAR_1X_PRODUCAO) continue;
-      totalBaseline++;
-      if (partida.gols_casa >= partida.gols_fora) acertosBaseline++;
-    }
-
-    if (totalBaseline < MINIMO_CASOS_COMPETICAO) {
-      console.log(`${comp.nome}: baseline insuficiente ainda (${totalBaseline} casos filtrados, mínimo ${MINIMO_CASOS_COMPETICAO}) -- pulando.`);
-      continue;
-    }
-    const taxaBaseline = acertosBaseline / totalBaseline;
-
-    // Próximos jogos dessa competição -- janela móvel de 5 dias (não dia
-    // civil, pra não divergir do sync-odds.js por fuso horário), e status
-    // explícito ('agendado'), não por exclusão de 'finalizado' -- assim,
-    // se aparecer um status novo no futuro, ele não entra aqui sem querer.
+    // Busca os próximos jogos primeiro -- assim, se a competição não tiver
+    // histórico/baseline suficiente, sabemos exatamente quantos jogos
+    // ficaram de fora por esse motivo (não só "pulamos a competição")
     const agora = new Date();
     const limiteFuturo = new Date(agora.getTime() + JANELA_DIAS_A_FRENTE * 86400000);
     const { data: proximosJogos, error: erroProximosJogos } = await supabase
@@ -125,13 +100,49 @@ async function main() {
       console.error(`${comp.nome}: erro ao buscar próximos jogos:`, erroProximosJogos.message);
       continue;
     }
-
     if (!proximosJogos || proximosJogos.length === 0) continue;
+
+    totalJogosConsiderados += proximosJogos.length;
+
+    const todasPartidas = await buscarTudoPaginado(
+      supabase.from('partidas').select('id, data_hora, time_casa_id, time_fora_id, gols_casa, gols_fora')
+        .eq('competicao_id', comp.id).eq('status', 'finalizado').not('gols_casa', 'is', null)
+        .order('data_hora', { ascending: true })
+    );
+
+    if (todasPartidas.length < MINIMO_CASOS_COMPETICAO) {
+      console.log(`${comp.nome}: histórico insuficiente ainda (${todasPartidas.length} jogos finalizados, mínimo ${MINIMO_CASOS_COMPETICAO}) -- ${proximosJogos.length} jogo(s) próximo(s) ficam sem sinal.`);
+      ignoradosPorCompeticaoSemHistorico += proximosJogos.length;
+      continue;
+    }
+
+    // Baseline dessa competição: walk-forward em cima do próprio
+    // histórico, filtra p1X > 0.65, taxa real de acerto -- mesma
+    // metodologia validada no teste final, agora usando TODO o histórico
+    let acertosBaseline = 0, totalBaseline = 0;
+    for (let i = 0; i < todasPartidas.length; i++) {
+      const partida = todasPartidas[i];
+      const anteriores = partidasAntesDe(todasPartidas, partida);
+      const previsao = preverConfronto(anteriores, partida.time_casa_id, partida.time_fora_id, partida.data_hora);
+      if (!previsao || previsao.p1X <= LIMIAR_1X_PRODUCAO) continue;
+      totalBaseline++;
+      if (partida.gols_casa >= partida.gols_fora) acertosBaseline++;
+    }
+
+    if (totalBaseline < MINIMO_CASOS_COMPETICAO) {
+      console.log(`${comp.nome}: baseline insuficiente ainda (${totalBaseline} casos filtrados, mínimo ${MINIMO_CASOS_COMPETICAO}) -- ${proximosJogos.length} jogo(s) próximo(s) ficam sem sinal.`);
+      ignoradosPorBaselineInsuficiente += proximosJogos.length;
+      continue;
+    }
+    const taxaBaseline = acertosBaseline / totalBaseline;
 
     for (const jogo of proximosJogos) {
       const anteriores = partidasAntesDe(todasPartidas, jogo);
       const previsao = preverConfronto(anteriores, jogo.time_casa_id, jogo.time_fora_id, jogo.data_hora);
-      if (!previsao) continue;
+      if (!previsao) {
+        ignoradosPorHistoricoInsuficiente++;
+        continue;
+      }
 
       if (previsao.p1X <= LIMIAR_1X_PRODUCAO) {
         ignoradosPorFiltro++;
@@ -200,10 +211,17 @@ async function main() {
     }
   }
 
+  const somaTotal = criados + jaExistiam + ignoradosPorFiltro + ignoradosPorHistoricoInsuficiente + ignoradosPorCompeticaoSemHistorico + ignoradosPorBaselineInsuficiente;
+
   console.log('\n=== Geração de sinais sombra (Dupla 1X) concluída ===');
+  console.log(`Jogos considerados (dentro da janela de ${JANELA_DIAS_A_FRENTE} dias): ${totalJogosConsiderados}`);
   console.log(`Sinais novos criados: ${criados}`);
   console.log(`Já existiam (ignorados, não sobrescritos): ${jaExistiam}`);
   console.log(`Não passaram no filtro p1X > ${LIMIAR_1X_PRODUCAO}: ${ignoradosPorFiltro}`);
+  console.log(`Sem histórico suficiente pro Poisson calcular (jogo específico): ${ignoradosPorHistoricoInsuficiente}`);
+  console.log(`Competição sem os ${MINIMO_CASOS_COMPETICAO} jogos finalizados mínimos: ${ignoradosPorCompeticaoSemHistorico}`);
+  console.log(`Competição sem os ${MINIMO_CASOS_COMPETICAO} casos filtrados mínimos pro baseline: ${ignoradosPorBaselineInsuficiente}`);
+  console.log(`\nConferência: soma dos motivos = ${somaTotal} ${somaTotal === totalJogosConsiderados ? '✅ bate com o total considerado' : `⚠️  NÃO bate com o total considerado (${totalJogosConsiderados}) -- investigar`}`);
 }
 
 main().catch((err) => { console.error('Erro:', err); process.exit(1); });
