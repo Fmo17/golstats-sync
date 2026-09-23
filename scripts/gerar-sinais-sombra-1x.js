@@ -79,6 +79,7 @@ async function main() {
   let ignoradosPorHistoricoInsuficiente = 0; // preverConfronto() devolveu null pro jogo específico
   let ignoradosPorCompeticaoSemHistorico = 0; // competição inteira sem os 60 jogos mínimos
   let ignoradosPorBaselineInsuficiente = 0; // competição sem os 60 casos filtrados mínimos pro baseline
+  let ignoradosPorSemOdd = 0; // Bet365 ainda não tem odd pra esse jogo -- tenta de novo depois
   let totalJogosConsiderados = 0;
 
   for (const comp of competicoes) {
@@ -179,6 +180,15 @@ async function main() {
       const oddNoSinal = oddsRecentes?.[0]?.odd_dupla_1x ?? null;
       const oddNoSinalEm = oddsRecentes?.[0]?.capturado_em ?? null;
 
+      // Sem odd Bet365 ainda -- NÃO grava com odd_no_sinal=null (esse
+      // campo é imutável, ficaria travado sem odd pra sempre). Pula esse
+      // jogo por agora; ele tenta de novo na próxima execução (upsert com
+      // ignoreDuplicates permite isso, já que nada foi inserido ainda).
+      if (oddNoSinal === null) {
+        ignoradosPorSemOdd++;
+        continue;
+      }
+
       const { error, data: inserido } = await supabase
         .from('sinais_sombra_1x')
         .upsert(
@@ -211,7 +221,7 @@ async function main() {
     }
   }
 
-  const somaTotal = criados + jaExistiam + ignoradosPorFiltro + ignoradosPorHistoricoInsuficiente + ignoradosPorCompeticaoSemHistorico + ignoradosPorBaselineInsuficiente;
+  const somaTotal = criados + jaExistiam + ignoradosPorFiltro + ignoradosPorHistoricoInsuficiente + ignoradosPorCompeticaoSemHistorico + ignoradosPorBaselineInsuficiente + ignoradosPorSemOdd;
 
   console.log('\n=== Geração de sinais sombra (Dupla 1X) concluída ===');
   console.log(`Jogos considerados (dentro da janela de ${JANELA_DIAS_A_FRENTE} dias): ${totalJogosConsiderados}`);
@@ -221,6 +231,7 @@ async function main() {
   console.log(`Sem histórico suficiente pro Poisson calcular (jogo específico): ${ignoradosPorHistoricoInsuficiente}`);
   console.log(`Competição sem os ${MINIMO_CASOS_COMPETICAO} jogos finalizados mínimos: ${ignoradosPorCompeticaoSemHistorico}`);
   console.log(`Competição sem os ${MINIMO_CASOS_COMPETICAO} casos filtrados mínimos pro baseline: ${ignoradosPorBaselineInsuficiente}`);
+  console.log(`Sem odd Bet365 no momento do sinal (tenta de novo depois): ${ignoradosPorSemOdd}`);
   console.log(`\nConferência: soma dos motivos = ${somaTotal} ${somaTotal === totalJogosConsiderados ? '✅ bate com o total considerado' : `⚠️  NÃO bate com o total considerado (${totalJogosConsiderados}) -- investigar`}`);
 }
 

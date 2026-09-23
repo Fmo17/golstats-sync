@@ -9,9 +9,10 @@ on:
     - cron: '0 */2 * * *'
   workflow_dispatch: {}
 
-# Impede que 2 execuções desse workflow rodem ao mesmo tempo
+# Mesmo grupo do workflow de odds -- impede os 2 workflows de rodarem ao
+# mesmo tempo (eles coincidem às 08h e 18h UTC)
 concurrency:
-  group: atualizar-resultados
+  group: golstats-api-pipeline
   cancel-in-progress: false
 
 jobs:
@@ -43,14 +44,14 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
         run: node scripts/sync.js --corrigir-agendados
 
-      - name: Verificar sinais contra resultados reais
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
-        run: node scripts/verificar-sinais.js
-
       - name: Liquidar sinais sombra Dupla 1X (experimento isolado)
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
         run: node scripts/liquidar-sinais-sombra-1x.js
+
+      - name: Verificar sinais contra resultados reais
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: node scripts/verificar-sinais.js

@@ -8,11 +8,11 @@ on:
     - cron: '0 18 * * *'
   workflow_dispatch: {}
 
-# Impede que 2 execuções desse workflow rodem ao mesmo tempo -- se uma
-# ainda estiver rodando quando o próximo horário chegar, a nova espera
-# (não cancela a que já está em andamento)
+# Mesmo grupo do workflow de resultados -- impede os 2 workflows de
+# rodarem ao mesmo tempo (eles coincidem às 08h e 18h UTC), não só
+# execuções duplicadas do mesmo workflow
 concurrency:
-  group: sync-odds
+  group: golstats-api-pipeline
   cancel-in-progress: false
 
 jobs:
@@ -35,16 +35,16 @@ jobs:
           API_FOOTBALL_KEY: ${{ secrets.API_FOOTBALL_KEY }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
-        run: node scripts/sync-odds.js --limite=1000 --pausa=500
-
-      - name: Reclassificar valor com as odds atualizadas
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
-        run: node scripts/encontrar-valor.js
+        run: node scripts/sync-odds.js --dias=5 --limite=1000 --pausa=500
 
       - name: Gerar sinais sombra Dupla 1X (experimento isolado)
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
         run: node scripts/gerar-sinais-sombra-1x.js
+
+      - name: Reclassificar valor com as odds atualizadas
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: node scripts/encontrar-valor.js

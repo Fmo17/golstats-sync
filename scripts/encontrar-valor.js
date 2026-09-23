@@ -28,6 +28,21 @@ import { createClient } from '@supabase/supabase-js';
 
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
 
+async function buscarTudoPaginado(query) {
+  const TAMANHO_PAGINA = 1000;
+  let pagina = 0;
+  let todos = [];
+  while (true) {
+    const { data, error } = await query.range(pagina * TAMANHO_PAGINA, pagina * TAMANHO_PAGINA + TAMANHO_PAGINA - 1);
+    if (error) throw error;
+    if (!data || data.length === 0) break;
+    todos = todos.concat(data);
+    if (data.length < TAMANHO_PAGINA) break;
+    pagina++;
+  }
+  return todos;
+}
+
 const LIMIAR_ALTA_CONFIANCA = 0.70;
 
 const COLUNA_ODD_POR_MERCADO = {
@@ -51,9 +66,11 @@ const NOMES_MERCADO = {
 async function main() {
   console.log('Buscando sinais e odds pra classificar valor...\n');
 
-  const { data: sinais } = await supabase
-    .from('sinais')
-    .select('id, partida_id, tipo_mercado, probabilidade_modelo');
+  const sinais = await buscarTudoPaginado(
+    supabase
+      .from('sinais')
+      .select('id, partida_id, tipo_mercado, probabilidade_modelo')
+  );
 
   if (!sinais || sinais.length === 0) {
     console.log('Nenhum sinal encontrado.');
@@ -62,11 +79,13 @@ async function main() {
 
   const idsPartidas = [...new Set(sinais.map((s) => s.partida_id))];
 
-  const { data: odds } = await supabase
-    .from('odds_historico')
-    .select('*')
-    .in('partida_id', idsPartidas)
-    .order('capturado_em', { ascending: false });
+  const odds = await buscarTudoPaginado(
+    supabase
+      .from('odds_historico')
+      .select('*')
+      .in('partida_id', idsPartidas)
+      .order('capturado_em', { ascending: false })
+  );
 
   if (!odds || odds.length === 0) {
     console.log('Nenhuma odd encontrada -- roda o sync-odds.js primeiro.');
@@ -80,7 +99,9 @@ async function main() {
   }
   const oddsRecentes = Object.values(oddsRecentesPorPartidaCasa);
 
-  const { data: partidas } = await supabase.from('partidas').select('id, data_hora, competicao_id, time_casa_id, time_fora_id').in('id', idsPartidas);
+  const partidas = await buscarTudoPaginado(
+    supabase.from('partidas').select('id, data_hora, competicao_id, time_casa_id, time_fora_id').in('id', idsPartidas)
+  );
   const partidaPorId = Object.fromEntries((partidas || []).map((p) => [p.id, p]));
   const idsComp = [...new Set((partidas || []).map((p) => p.competicao_id))];
   const idsTimes = [...new Set((partidas || []).flatMap((p) => [p.time_casa_id, p.time_fora_id]))];
@@ -100,12 +121,22 @@ async function main() {
     if (!colunaOdd) continue;
 
     const oddsDessaPartida = oddsRecentes.filter((o) => o.partida_id === sinal.partida_id && o[colunaOdd] !== null);
-    if (oddsDessaPartida.length === 0) { semOddDisponivel++; continue; }
+    if (oddsDessaPartida.length === 0) {
+      semOddDisponivel++;
+      await supabase.from('sinais').update({ teve_valor: null, odd_referencia: null, divergencia_valor: null }).eq('id', sinal.id);
+      continue;
+    }
 
     // Usa especificamente a odd da Bet365 -- mais consistente do que pegar
     // "a melhor odd entre 9 casas diferentes", que muda de casa a cada jogo
     const oddBet365 = oddsDessaPartida.find((o) => o.casa_apostas === 'Bet365');
-    if (!oddBet365) { semOddDisponivel++; continue; }
+    if (!oddBet365) {
+      semOddDisponivel++;
+      // Limpa qualquer classificação antiga (de antes de usarmos só Bet365)
+      // pra não deixar dado desatualizado, com fonte errada, no sistema.
+      await supabase.from('sinais').update({ teve_valor: null, odd_referencia: null, divergencia_valor: null }).eq('id', sinal.id);
+      continue;
+    }
 
     const oddOferecida = oddBet365[colunaOdd];
     const oddMinimaNecessaria = 1 / sinal.probabilidade_modelo;
