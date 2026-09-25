@@ -177,6 +177,18 @@ async function syncFixtures(competicao) {
     season: competicao.temporada,
   });
 
+  // A própria resposta de fixtures já traz o logo da competição
+  // (fx.league.logo) -- mesmo objeto de onde já tirávamos "rodada". Não
+  // precisa de nenhuma chamada extra à API pra isso.
+  const logoUrl = fixtures[0]?.league?.logo;
+  if (logoUrl) {
+    const { error: erroLogo } = await supabase
+      .from('competicoes')
+      .update({ logo_url: logoUrl })
+      .eq('id', competicao.id);
+    if (erroLogo) console.error(`  Erro ao gravar logo de ${competicao.nome}:`, erroLogo.message);
+  }
+
   for (const fx of fixtures) {
     const timeCasa = await upsertTime(fx.teams.home);
     const timeFora = await upsertTime(fx.teams.away);
